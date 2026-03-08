@@ -137,4 +137,7 @@ backend_vendor/
 backend_storage/
 frontend_node_modules/
 
+# Windows null device
+nul
+
 .claude/settings.local.json
