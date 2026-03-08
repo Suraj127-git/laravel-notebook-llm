@@ -1,7 +1,5 @@
 <?php
 
-<?php
-
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\DocumentController;
