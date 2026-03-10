@@ -130,7 +130,7 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
-        'nightwatch' => [
+        'app_stack' => [
             'driver' => 'stack',
             'channels' => ['single', 'stderr'],
             'ignore_exceptions' => false,
@@ -138,6 +138,12 @@ return [
                 RequestIdProcessor::class,
                 UserContextProcessor::class,
             ],
+        ],
+
+        'main' => [
+            'driver' => 'stack',
+            'channels' => ['app_stack', 'nightwatch'],
+            'ignore_exceptions' => true,
         ],
 
         'ai_events' => [

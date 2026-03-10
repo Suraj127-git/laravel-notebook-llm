@@ -151,6 +151,28 @@ class ChatController extends Controller
     }
 
     /**
+     * Generate 3 suggested follow-up questions based on the last AI answer.
+     */
+    public function suggestQuestions(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'notebook_id' => ['required', 'integer', 'exists:notebooks,id'],
+            'last_answer' => ['required', 'string', 'max:8000'],
+        ]);
+
+        try {
+            $agent = new KnowledgeAgent($request->user(), (int) $validated['notebook_id']);
+            $questions = $agent->suggestQuestions($validated['last_answer']);
+
+            return response()->json(['questions' => $questions]);
+        } catch (\Throwable $e) {
+            Log::warning('suggestQuestions failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['questions' => []]);
+        }
+    }
+
+    /**
      * Return chat history for a notebook (latest 50 messages, oldest first).
      */
     public function history(Request $request, int $notebookId): JsonResponse

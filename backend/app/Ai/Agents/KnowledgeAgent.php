@@ -8,7 +8,8 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Enums\Lab;
-use Laravel\Ai\Traits\Promptable;
+use Laravel\Ai\Promptable;
+use Laravel\Ai\Streaming\Events\TextDelta;
 
 class KnowledgeAgent implements Agent
 {
@@ -66,7 +67,7 @@ class KnowledgeAgent implements Agent
             model: 'llama-3.3-70b-versatile',
         );
 
-        $text = $response->text();
+        $text = $response->text;
         $duration = round((microtime(true) - $startTime) * 1000, 2);
 
         Log::info('KnowledgeAgent chat: completed', [
@@ -118,7 +119,11 @@ class KnowledgeAgent implements Agent
         $fullText = '';
 
         foreach ($stream as $event) {
-            $chunkText = $event->text();
+            if (! $event instanceof TextDelta) {
+                continue;
+            }
+
+            $chunkText = $event->delta;
             $fullText .= $chunkText;
             $chunkCount++;
 
@@ -151,6 +156,63 @@ class KnowledgeAgent implements Agent
     public function getSources(): array
     {
         return $this->sources;
+    }
+
+    /**
+     * Generate 3 follow-up questions based on the last AI answer.
+     *
+     * @return string[]
+     */
+    public function suggestQuestions(string $lastAnswer): array
+    {
+        $prompt = "Based on this AI answer, generate exactly 3 short follow-up questions a curious user might ask next. "
+            ."Return a JSON array of strings only, no other text. Answer:\n\n{$lastAnswer}";
+
+        $response = $this->prompt(
+            $prompt,
+            provider: Lab::Groq,
+            model: 'llama-3.3-70b-versatile',
+        );
+
+        try {
+            $text = $response->text;
+            // Extract JSON array from response
+            preg_match('/\[.*?\]/s', $text, $matches);
+            if (! empty($matches[0])) {
+                $questions = json_decode($matches[0], true);
+                if (is_array($questions)) {
+                    return array_slice(array_values($questions), 0, 3);
+                }
+            }
+        } catch (\Throwable) {}
+
+        return [];
+    }
+
+    /**
+     * Generate structured content (study_guide, faq, timeline, briefing) from notebook documents.
+     */
+    public function generateContent(string $type): string
+    {
+        $this->retrieveContext("Generate a {$type} from these documents");
+
+        $systemPrompts = [
+            'study_guide' => 'Create a comprehensive study guide with ## sections and bullet points covering key concepts, definitions, and important points from the documents.',
+            'faq'         => 'Create a FAQ (Frequently Asked Questions) document with Q: and A: format covering the most important topics from the documents.',
+            'timeline'    => 'Create a chronological timeline of events, dates, and developments mentioned in the documents. Use "**Year/Date:** Event" format.',
+            'briefing'    => 'Create a concise executive briefing document summarizing the key findings, recommendations, and important points from the documents.',
+        ];
+
+        $prompt = ($systemPrompts[$type] ?? 'Summarize the key information from the documents.')
+            .' Format your response in clean Markdown.';
+
+        $response = $this->prompt(
+            $prompt,
+            provider: Lab::Groq,
+            model: 'llama-3.3-70b-versatile',
+        );
+
+        return $response->text;
     }
 
     /**

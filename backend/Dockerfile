@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libfreetype-dev \
         libjpeg62-turbo-dev \
         libpng-dev \
+        poppler-utils \
+        tesseract-ocr \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install -j$(nproc) \
         pdo_pgsql \

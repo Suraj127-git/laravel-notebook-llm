@@ -5,6 +5,8 @@ export const api = axios.create({
   withCredentials: true,
 })
 
+export default api
+
 export async function getCsrfCookie() {
   await axios.get('/sanctum/csrf-cookie', { withCredentials: true })
 }

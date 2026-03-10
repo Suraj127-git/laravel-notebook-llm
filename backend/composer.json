@@ -10,9 +10,11 @@
         "laravel/ai": "^0.2.5",
         "laravel/framework": "^12.0",
         "laravel/nightwatch": "^1.24",
+        "laravel/reverb": "^1.0",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.10.1",
         "league/csv": "^9.0",
+        "openai-php/client": "^0.10",
         "phpoffice/phpword": "^1.0",
         "smalot/pdfparser": "^2.0"
     },

@@ -1,4 +1,4 @@
-type ExportMessage = {
+export type ExportMessage = {
   role: 'user' | 'assistant'
   content: string
 }

@@ -101,7 +101,6 @@ class EmbeddingService
                 'documents.title as document_title',
             ])
             ->join('documents', 'documents.id', '=', 'document_chunks.document_id')
-            ->whereVectorSimilarTo('document_chunks.embedding', $queryEmbedding, minSimilarity: 0.35)
             ->orderByVectorDistance('document_chunks.embedding', $queryEmbedding)
             ->limit($limit);
 
@@ -122,7 +121,7 @@ class EmbeddingService
             ->embeddings[0];
 
         return Document::query()
-            ->whereVectorSimilarTo('embedding', $queryEmbedding, minSimilarity: 0.35)
+            ->orderByVectorDistance('embedding', $queryEmbedding)
             ->limit($limit)
             ->get();
     }

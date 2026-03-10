@@ -30,7 +30,7 @@ if [ "${APP_ENV}" = "production" ]; then
 fi
 
 # ── Ensure storage dirs exist and are writable ───────────────────────────────
-mkdir -p storage/logs storage/app/documents storage/framework/cache storage/framework/sessions storage/framework/views
+mkdir -p storage/logs storage/app/private/documents storage/framework/cache storage/framework/sessions storage/framework/views
 chmod -R 775 storage bootstrap/cache
 
 exec "$@"

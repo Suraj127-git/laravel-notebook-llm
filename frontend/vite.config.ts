@@ -9,6 +9,15 @@ export default defineConfig({
     proxy: {
       '/api': 'http://backend:8000',
       '/sanctum': 'http://backend:8000',
+      '/app': {
+        target: 'ws://reverb:8080',
+        ws: true,
+        changeOrigin: true,
+      },
+    },
+    watch: {
+      usePolling: true,
+      interval: 1000,
     },
   },
 })

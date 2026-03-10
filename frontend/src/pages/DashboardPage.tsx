@@ -1,16 +1,25 @@
-import { motion } from 'framer-motion'
+import { useCallback, useState } from 'react'
 import { ChatPanel } from '../components/ChatPanel'
-import { DocumentUpload } from '../components/DocumentUpload'
 import { NotebookSidebar } from '../components/NotebookSidebar'
+import StudioPanel from '../components/StudioPanel'
+import TopNav from '../components/TopNav'
+import type { AudioOverviewUpdate } from '../hooks/useDocumentChannel'
 import { useNotebooks } from '../hooks/useNotebooks'
 
 export function DashboardPage() {
   const { notebooks, loading, selected, setSelected, create, destroy } = useNotebooks()
+  const [audioReadySignal, setAudioReadySignal] = useState<AudioOverviewUpdate | null>(null)
+
+  const handleAudioReady = useCallback((update: AudioOverviewUpdate) => {
+    setAudioReadySignal(update)
+  }, [])
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-50">
-      {/* Sidebar */}
-      <aside className="hidden w-56 flex-col border-r border-slate-800 p-3 md:flex">
+    <div className="flex flex-col h-screen overflow-hidden">
+      <TopNav notebook={selected} />
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sources sidebar */}
         <NotebookSidebar
           notebooks={notebooks}
           selected={selected}
@@ -18,40 +27,38 @@ export function DashboardPage() {
           onSelect={setSelected}
           onCreate={create}
           onDelete={destroy}
+          onAudioReady={handleAudioReady}
         />
-      </aside>
 
-      <motion.main
-        initial={{ opacity: 0, x: 24 }}
-        animate={{ opacity: 1, x: 0 }}
-        className="flex flex-1 flex-col"
-      >
-        <header className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-          <h1 className="text-sm font-semibold">
-            {selected ? `${selected.emoji} ${selected.name}` : 'NotebookLLM'}
-          </h1>
-          <span className="text-xs text-slate-400">
-            {selected?.documents_count ?? 0} doc{(selected?.documents_count ?? 0) !== 1 ? 's' : ''}
-          </span>
-        </header>
-
-        <div className="flex flex-1 overflow-hidden">
-          <section className="flex flex-1 flex-col border-r border-slate-800">
-            {selected ? (
-              <ChatPanel notebookId={selected.id} notebookName={selected.name} />
-            ) : (
-              <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
-                {loading ? 'Loading…' : 'Create a notebook to get started'}
+        {/* Chat area */}
+        <main className="flex flex-1 overflow-hidden min-w-0">
+          {selected ? (
+            <ChatPanel notebookId={selected.id} notebookName={selected.name} />
+          ) : (
+            <div className="flex flex-1 items-center justify-center">
+              <div className="text-center space-y-3">
+                <div className="w-16 h-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto">
+                  <svg className="w-8 h-8 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                  </svg>
+                </div>
+                <p className="text-sm text-slate-400">
+                  {loading ? 'Loading notebooks…' : 'Select or create a notebook to get started'}
+                </p>
               </div>
-            )}
-          </section>
+            </div>
+          )}
+        </main>
 
-          <section className="hidden w-80 flex-col lg:flex">
-            {selected && <DocumentUpload notebookId={selected.id} />}
-          </section>
-        </div>
-      </motion.main>
+        {/* Studio panel */}
+        {selected && (
+          <StudioPanel
+            notebookId={selected.id}
+            notebookName={selected.name}
+            audioReadySignal={audioReadySignal}
+          />
+        )}
+      </div>
     </div>
   )
 }
-

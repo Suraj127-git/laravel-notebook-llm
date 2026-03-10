@@ -12,6 +12,7 @@ const TERMINAL = new Set<DocRecord['status']>(['ready', 'failed'])
 export function DocumentUpload({ notebookId }: { notebookId: number }) {
   const [docs, setDocs] = useState<DocRecord[]>([])
   const [uploading, setUploading] = useState(false)
+  const [deleting, setDeleting] = useState<number | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchDocs = useCallback(async () => {
@@ -45,6 +46,17 @@ export function DocumentUpload({ notebookId }: { notebookId: number }) {
       }
     }
   }, [docs, fetchDocs])
+
+  const handleDelete = async (doc: DocRecord) => {
+    if (!confirm(`Remove "${doc.title}"?`)) return
+    setDeleting(doc.id)
+    try {
+      await api.delete(`/documents/${doc.id}`)
+      setDocs((prev) => prev.filter((d) => d.id !== doc.id))
+    } finally {
+      setDeleting(null)
+    }
+  }
 
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return
@@ -88,19 +100,29 @@ export function DocumentUpload({ notebookId }: { notebookId: number }) {
             key={doc.id}
             className="flex items-center justify-between rounded border border-slate-800 bg-slate-900 px-2 py-1"
           >
-            <span className="max-w-[10rem] truncate">{doc.title}</span>
-            <span
-              className={
-                {
-                  uploaded: 'text-yellow-400',
-                  processing: 'text-blue-400 animate-pulse',
-                  ready: 'text-emerald-400',
-                  failed: 'text-red-400',
-                }[doc.status]
-              }
-            >
-              {doc.status}
-            </span>
+            <span className="max-w-[8rem] truncate">{doc.title}</span>
+            <div className="flex items-center gap-2">
+              <span
+                className={
+                  {
+                    uploaded: 'text-yellow-400',
+                    processing: 'text-blue-400 animate-pulse',
+                    ready: 'text-emerald-400',
+                    failed: 'text-red-400',
+                  }[doc.status]
+                }
+              >
+                {doc.status}
+              </span>
+              <button
+                onClick={() => handleDelete(doc)}
+                disabled={deleting === doc.id}
+                className="text-slate-500 hover:text-red-400 disabled:opacity-40"
+                title="Remove document"
+              >
+                {deleting === doc.id ? '…' : '✕'}
+              </button>
+            </div>
           </div>
         ))}
 

@@ -60,6 +60,27 @@ services:
       retries: 5
       start_period: 30s
 
+  # ── Laravel Reverb (WebSocket server) ─────────────────────────────────────
+  reverb:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: notebookllm-reverb
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080 --no-interaction
+    env_file:
+      - ./backend/.env.docker
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+      - backend_storage:/var/www/html/storage
+
   # ── Queue worker ───────────────────────────────────────────────────────────
   queue:
     build:
@@ -98,6 +119,25 @@ services:
       - backend_vendor:/var/www/html/vendor
       - backend_storage:/var/www/html/storage
 
+  # ── Nightwatch agent (log ingest → Nightwatch cloud) ──────────────────────
+  nightwatch-agent:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: notebookllm-nightwatch
+    restart: unless-stopped
+    working_dir: /var/www/html
+    command: php artisan nightwatch:agent --listen-on=0.0.0.0:2407
+    env_file:
+      - ./backend/.env.docker
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+      - backend_storage:/var/www/html/storage
+
   # ── Frontend (Vite dev server) ─────────────────────────────────────────────
   frontend:
     build:
@@ -111,6 +151,10 @@ services:
       - "5173:5173"
     environment:
       VITE_API_BASE_URL: /api
+      VITE_REVERB_APP_KEY: lgdbldvgvcqqosaobmym
+      VITE_REVERB_HOST: localhost
+      VITE_REVERB_PORT: "8080"
+      VITE_REVERB_SCHEME: http
     depends_on:
       backend:
         condition: service_healthy
