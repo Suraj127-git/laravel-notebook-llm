@@ -24,9 +24,12 @@ class KnowledgeAgent implements Agent
         public ?Authenticatable $user = null,
         private int|string|null $notebookId = null,
     ) {
-        Log::info('KnowledgeAgent initialized', [
-            'user_id' => $user?->id,
+        Log::debug('agent.init', [
+            'operation'   => 'init',
+            'user_id'     => $user?->id,
             'notebook_id' => $notebookId,
+            'provider'    => 'groq',
+            'model'       => 'llama-3.3-70b-versatile',
         ]);
     }
 
@@ -54,11 +57,17 @@ class KnowledgeAgent implements Agent
     public function chat(string $message): object
     {
         $startTime = microtime(true);
+
         $this->retrieveContext($message);
 
-        Log::info('KnowledgeAgent chat: context retrieved', [
-            'user_id' => $this->user?->id,
-            'sources_count' => count($this->sources),
+        Log::info('agent.rag_complete', [
+            'operation'    => 'chat',
+            'user_id'      => $this->user?->id,
+            'notebook_id'  => $this->notebookId,
+            'source_count' => count($this->sources),
+            'used_rag'     => ! empty($this->sources),
+            'provider'     => 'groq',
+            'model'        => 'llama-3.3-70b-versatile',
         ]);
 
         $response = $this->prompt(
@@ -67,13 +76,19 @@ class KnowledgeAgent implements Agent
             model: 'llama-3.3-70b-versatile',
         );
 
-        $text = $response->text;
+        $text     = $response->text;
         $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-        Log::info('KnowledgeAgent chat: completed', [
-            'user_id' => $this->user?->id,
+        Log::info('agent.chat_complete', [
+            'operation'       => 'chat',
+            'user_id'         => $this->user?->id,
+            'notebook_id'     => $this->notebookId,
+            'provider'        => 'groq',
+            'model'           => 'llama-3.3-70b-versatile',
+            'source_count'    => count($this->sources),
+            'used_rag'        => ! empty($this->sources),
             'response_length' => strlen($text),
-            'duration_ms' => $duration,
+            'duration_ms'     => $duration,
         ]);
 
         $this->logUsage('chat', strlen($message), strlen($text));
@@ -102,11 +117,17 @@ class KnowledgeAgent implements Agent
     public function chatStream(string $message): \Generator
     {
         $startTime = microtime(true);
+
         $this->retrieveContext($message);
 
-        Log::info('KnowledgeAgent chatStream: starting', [
-            'user_id' => $this->user?->id,
-            'sources_count' => count($this->sources),
+        Log::info('agent.stream_start', [
+            'operation'    => 'stream',
+            'user_id'      => $this->user?->id,
+            'notebook_id'  => $this->notebookId,
+            'source_count' => count($this->sources),
+            'used_rag'     => ! empty($this->sources),
+            'provider'     => 'groq',
+            'model'        => 'llama-3.3-70b-versatile',
         ]);
 
         $stream = $this->stream(
@@ -116,15 +137,15 @@ class KnowledgeAgent implements Agent
         );
 
         $chunkCount = 0;
-        $fullText = '';
+        $fullText   = '';
 
         foreach ($stream as $event) {
             if (! $event instanceof TextDelta) {
                 continue;
             }
 
-            $chunkText = $event->delta;
-            $fullText .= $chunkText;
+            $chunkText  = $event->delta;
+            $fullText  .= $chunkText;
             $chunkCount++;
 
             yield new class($chunkText) {
@@ -139,10 +160,17 @@ class KnowledgeAgent implements Agent
 
         $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-        Log::info('KnowledgeAgent chatStream: completed', [
-            'user_id' => $this->user?->id,
-            'chunks' => $chunkCount,
-            'duration_ms' => $duration,
+        Log::info('agent.stream_complete', [
+            'operation'       => 'stream',
+            'user_id'         => $this->user?->id,
+            'notebook_id'     => $this->notebookId,
+            'provider'        => 'groq',
+            'model'           => 'llama-3.3-70b-versatile',
+            'chunk_count'     => $chunkCount,
+            'source_count'    => count($this->sources),
+            'used_rag'        => ! empty($this->sources),
+            'response_length' => strlen($fullText),
+            'duration_ms'     => $duration,
         ]);
 
         $this->logUsage('stream', strlen($message), strlen($fullText));
@@ -176,7 +204,6 @@ class KnowledgeAgent implements Agent
 
         try {
             $text = $response->text;
-            // Extract JSON array from response
             preg_match('/\[.*?\]/s', $text, $matches);
             if (! empty($matches[0])) {
                 $questions = json_decode($matches[0], true);
@@ -220,48 +247,73 @@ class KnowledgeAgent implements Agent
      */
     private function retrieveContext(string $message): void
     {
+        $start = microtime(true);
+
         try {
             /** @var EmbeddingService $embeddingService */
             $embeddingService = app(EmbeddingService::class);
-            $chunks = $embeddingService->searchSimilarChunks($message, $this->notebookId, limit: 5);
+            $chunks           = $embeddingService->searchSimilarChunks($message, $this->notebookId, limit: 5);
 
-            $this->sources = [];
-            $contextParts = [];
+            $this->sources    = [];
+            $contextParts     = [];
 
             foreach ($chunks as $chunk) {
-                $contextParts[] = "Source: {$chunk->document_title}\n{$chunk->content}";
+                $contextParts[]  = "Source: {$chunk->document_title}\n{$chunk->content}";
                 $this->sources[] = [
-                    'title' => $chunk->document_title,
+                    'title'       => $chunk->document_title,
                     'document_id' => (int) $chunk->document_id,
                 ];
             }
 
             $this->retrievedContext = implode("\n\n---\n\n", $contextParts);
+
+            Log::debug('agent.rag_retrieval', [
+                'operation'      => 'rag_retrieval',
+                'user_id'        => $this->user?->id,
+                'notebook_id'    => $this->notebookId,
+                'chunks_found'   => count($chunks),
+                'source_count'   => count($this->sources),
+                'context_length' => strlen($this->retrievedContext),
+                'duration_ms'    => round((microtime(true) - $start) * 1000, 2),
+            ]);
         } catch (\Throwable $e) {
-            Log::warning('KnowledgeAgent: context retrieval failed, proceeding without context', [
-                'error' => $e->getMessage(),
+            Log::warning('agent.rag_retrieval_failed', [
+                'operation'   => 'rag_retrieval',
+                'user_id'     => $this->user?->id,
+                'notebook_id' => $this->notebookId,
+                'error'       => $e->getMessage(),
+                'error_class' => get_class($e),
+                'duration_ms' => round((microtime(true) - $start) * 1000, 2),
             ]);
 
             $this->retrievedContext = '';
-            $this->sources = [];
+            $this->sources          = [];
         }
     }
 
     private function logUsage(string $operation, int $inputChars, int $outputChars): void
     {
         try {
+            $promptTokens     = (int) ceil($inputChars / 4);
+            $completionTokens = (int) ceil($outputChars / 4);
+
             AiUsageLog::create([
-                'user_id' => $this->user?->id,
-                'provider' => 'groq',
-                'model' => 'llama-3.3-70b-versatile',
-                'operation' => $operation,
-                'prompt_tokens' => (int) ceil($inputChars / 4),
-                'completion_tokens' => (int) ceil($outputChars / 4),
-                'estimated_cost' => null,
-                'metadata' => ['notebook_id' => $this->notebookId],
+                'user_id'           => $this->user?->id,
+                'provider'          => 'groq',
+                'model'             => 'llama-3.3-70b-versatile',
+                'operation'         => $operation,
+                'prompt_tokens'     => $promptTokens,
+                'completion_tokens' => $completionTokens,
+                'estimated_cost'    => null,
+                'metadata'          => ['notebook_id' => $this->notebookId],
             ]);
         } catch (\Throwable $e) {
-            Log::warning('KnowledgeAgent: failed to log AI usage', ['error' => $e->getMessage()]);
+            Log::warning('agent.usage_log_failed', [
+                'operation'   => 'log_usage',
+                'user_id'     => $this->user?->id,
+                'notebook_id' => $this->notebookId,
+                'error'       => $e->getMessage(),
+            ]);
         }
     }
 }

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\DocumentProcessingFailed;
 use App\Events\DocumentStatusUpdated;
+use App\Logging\Processors\RequestIdProcessor;
 use App\Models\Document;
 use App\Services\ChunkingService;
 use App\Services\EmbeddingService;
@@ -31,14 +32,30 @@ class ProcessUploadedDocument implements ShouldQueue
     {
         $this->document->refresh();
 
-        Log::info('ProcessUploadedDocument: starting', [
-            'document_id' => $this->document->id,
-            'mime_type' => $this->document->mime_type,
-        ]);
+        // Pin trace_id to this job's UUID so all log lines share one filterable trace
+        if ($this->job) {
+            RequestIdProcessor::setTraceId($this->job->uuid());
+        }
+
+        $jobStart = microtime(true);
+
+        $logContext = [
+            'document_id'   => $this->document->id,
+            'notebook_id'   => $this->document->notebook_id,
+            'user_id'       => $this->document->user_id,
+            'filename'      => $this->document->filename,
+            'mime_type'     => $this->document->mime_type,
+            'file_size'     => $this->document->file_size ?? null,
+            'attempt'       => $this->attempts(),
+        ];
+
+        Log::info('ProcessUploadedDocument: starting', $logContext);
 
         $path = Storage::disk('local')->path('documents/'.$this->document->filename);
 
         try {
+            $extractStart = microtime(true);
+
             $text = match (true) {
                 str_contains($this->document->mime_type, 'pdf') => $this->extractPdf($path),
                 str_contains($this->document->mime_type, 'wordprocessingml') ||
@@ -49,10 +66,12 @@ class ProcessUploadedDocument implements ShouldQueue
                 default => file_get_contents($path),
             };
         } catch (\Throwable $e) {
-            Log::error('ProcessUploadedDocument: text extraction failed', [
-                'document_id' => $this->document->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('ProcessUploadedDocument: text extraction failed', array_merge($logContext, [
+                'status'          => 'failed',
+                'error'           => $e->getMessage(),
+                'error_class'     => get_class($e),
+                'duration_ms'     => round((microtime(true) - $jobStart) * 1000, 2),
+            ]));
 
             $this->document->status = 'failed';
             $this->document->extraction_error = $e->getMessage();
@@ -67,26 +86,34 @@ class ProcessUploadedDocument implements ShouldQueue
         $this->document->save();
         broadcast(new DocumentStatusUpdated($this->document));
 
-        Log::info('ProcessUploadedDocument: text extracted, chunking', [
-            'document_id' => $this->document->id,
-            'text_length' => strlen($text),
-        ]);
+        Log::info('ProcessUploadedDocument: text extracted, chunking', array_merge($logContext, [
+            'status'          => 'processing',
+            'text_length'     => strlen($text),
+            'extract_ms'      => round((microtime(true) - $extractStart) * 1000, 2),
+        ]));
 
         // Split into overlapping chunks for better RAG retrieval quality
         $chunks = $chunkingService->chunk($text);
 
-        Log::info('ProcessUploadedDocument: chunks created, embedding with Voyage AI', [
-            'document_id' => $this->document->id,
+        Log::info('ProcessUploadedDocument: chunks created, embedding with Voyage AI', array_merge($logContext, [
+            'status'      => 'embedding',
             'chunk_count' => count($chunks),
-        ]);
+            'provider'    => 'voyage_ai',
+            'model'       => 'voyage-3',
+        ]));
 
         try {
+            $embedStart = microtime(true);
             $embeddingService->embedChunks($this->document, $chunks);
         } catch (\Throwable $e) {
-            Log::error('ProcessUploadedDocument: embedding failed', [
-                'document_id' => $this->document->id,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('ProcessUploadedDocument: embedding failed', array_merge($logContext, [
+                'status'      => 'failed',
+                'error'       => $e->getMessage(),
+                'error_class' => get_class($e),
+                'chunk_count' => count($chunks),
+                'provider'    => 'voyage_ai',
+                'duration_ms' => round((microtime(true) - $jobStart) * 1000, 2),
+            ]));
 
             $this->document->status = 'failed';
             $this->document->extraction_error = 'Embedding failed: '.$e->getMessage();
@@ -100,10 +127,15 @@ class ProcessUploadedDocument implements ShouldQueue
         $this->document->save();
         broadcast(new DocumentStatusUpdated($this->document));
 
-        Log::info('ProcessUploadedDocument: completed', [
-            'document_id' => $this->document->id,
-            'chunk_count' => count($chunks),
-        ]);
+        $totalMs = round((microtime(true) - $jobStart) * 1000, 2);
+
+        Log::info('ProcessUploadedDocument: completed', array_merge($logContext, [
+            'status'       => 'ready',
+            'chunk_count'  => count($chunks),
+            'text_length'  => strlen($text),
+            'embed_ms'     => round((microtime(true) - $embedStart) * 1000, 2),
+            'duration_ms'  => $totalMs,
+        ]));
     }
 
     protected function extractPdf(string $path): string

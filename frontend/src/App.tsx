@@ -2,7 +2,6 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { LoginPage } from './pages/LoginPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { SettingsPage } from './pages/SettingsPage'
-import { UsagePage } from './pages/UsagePage'
 import { ProtectedRoute } from './components/ProtectedRoute'
 
 function App() {
@@ -16,7 +15,6 @@ function App() {
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/usage" element={<UsagePage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </ProtectedRoute>

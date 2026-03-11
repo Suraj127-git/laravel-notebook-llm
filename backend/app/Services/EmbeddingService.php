@@ -49,18 +49,26 @@ class EmbeddingService
             return;
         }
 
+        $start        = microtime(true);
+        $totalBatches = (int) ceil(count($chunks) / self::BATCH_SIZE);
+
         // Remove any existing chunks before re-embedding
         DocumentChunk::where('document_id', $document->id)->delete();
 
-        $batches = array_chunk($chunks, self::BATCH_SIZE);
+        $batches    = array_chunk($chunks, self::BATCH_SIZE);
         $chunkIndex = 0;
 
         foreach ($batches as $batchNumber => $batch) {
-            Log::debug('Embedding chunk batch', [
-                'document_id' => $document->id,
-                'batch' => $batchNumber + 1,
-                'total_batches' => count($batches),
-                'batch_size' => count($batch),
+            Log::debug('embedding.batch', [
+                'operation'     => 'embed_batch',
+                'document_id'   => $document->id,
+                'notebook_id'   => $document->notebook_id,
+                'user_id'       => $document->user_id,
+                'provider'      => 'voyage_ai',
+                'model'         => self::VOYAGE_MODEL,
+                'batch'         => $batchNumber + 1,
+                'total_batches' => $totalBatches,
+                'batch_size'    => count($batch),
             ]);
 
             $response = Embeddings::for($batch)
@@ -69,19 +77,27 @@ class EmbeddingService
             foreach ($response->embeddings as $i => $embedding) {
                 DocumentChunk::create([
                     'document_id' => $document->id,
-                    'user_id' => $document->user_id,
+                    'user_id'     => $document->user_id,
                     'notebook_id' => $document->notebook_id,
                     'chunk_index' => $chunkIndex++,
-                    'content' => $batch[$i],
-                    'embedding' => $embedding,
+                    'content'     => $batch[$i],
+                    'embedding'   => $embedding,
                     'token_count' => (int) ceil(strlen($batch[$i]) / 4),
                 ]);
             }
         }
 
-        Log::info('Document chunks embedded', [
-            'document_id' => $document->id,
-            'total_chunks' => $chunkIndex,
+        Log::info('embedding.complete', [
+            'operation'     => 'embed_chunks',
+            'status'        => 'success',
+            'document_id'   => $document->id,
+            'notebook_id'   => $document->notebook_id,
+            'user_id'       => $document->user_id,
+            'provider'      => 'voyage_ai',
+            'model'         => self::VOYAGE_MODEL,
+            'chunk_count'   => $chunkIndex,
+            'total_batches' => $totalBatches,
+            'duration_ms'   => round((microtime(true) - $start) * 1000, 2),
         ]);
     }
 

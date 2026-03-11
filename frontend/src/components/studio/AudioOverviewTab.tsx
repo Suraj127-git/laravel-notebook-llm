@@ -1,7 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { useAppSelector } from '../../store/hooks'
 import { useGenerateAudioOverviewMutation, useGetAudioOverviewQuery } from '../../store/api/audioApi'
 import type { AudioOverviewUpdate } from '../../hooks/useDocumentChannel'
 
@@ -10,18 +9,98 @@ type Props = {
   audioReadySignal: AudioOverviewUpdate | null
 }
 
+const TERMINAL_STATUSES = new Set(['ready', 'failed'])
+
+// ── Web Speech API player ─────────────────────────────────────────────────────
+function useScriptPlayer(script: string | null) {
+  const [playing, setPlaying] = useState(false)
+  const [progress, setProgress] = useState(0) // 0–100
+  const uttRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const turnsRef = useRef<string[]>([])
+  const indexRef = useRef(0)
+
+  const parseTurns = useCallback((raw: string) => {
+    return raw.split('\n').map((l) => l.trim()).filter(Boolean)
+  }, [])
+
+  const speakNext = useCallback(() => {
+    const turns = turnsRef.current
+    if (indexRef.current >= turns.length) {
+      setPlaying(false)
+      setProgress(100)
+      return
+    }
+    const text = turns[indexRef.current].replace(/^(Alex|Sam):\s*/i, '')
+    const utt = new SpeechSynthesisUtterance(text)
+    utt.rate = 1.05
+    utt.onend = () => {
+      indexRef.current++
+      setProgress(Math.round((indexRef.current / turns.length) * 100))
+      speakNext()
+    }
+    uttRef.current = utt
+    window.speechSynthesis.speak(utt)
+  }, [])
+
+  const play = useCallback(() => {
+    if (!script) return
+    window.speechSynthesis.cancel()
+    turnsRef.current = parseTurns(script)
+    indexRef.current = 0
+    setProgress(0)
+    setPlaying(true)
+    speakNext()
+  }, [script, parseTurns, speakNext])
+
+  const pause = useCallback(() => {
+    window.speechSynthesis.pause()
+    setPlaying(false)
+  }, [])
+
+  const resume = useCallback(() => {
+    window.speechSynthesis.resume()
+    setPlaying(true)
+  }, [])
+
+  const stop = useCallback(() => {
+    window.speechSynthesis.cancel()
+    setPlaying(false)
+    setProgress(0)
+    indexRef.current = 0
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => () => { window.speechSynthesis.cancel() }, [])
+
+  return { playing, progress, play, pause, resume, stop }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props) {
-  const token = useAppSelector((s) => s.auth.token)
   const { data: overview, refetch } = useGetAudioOverviewQuery(notebookId)
   const [generateAudio, { isLoading: isGenerating }] = useGenerateAudioOverviewMutation()
   const [scriptOpen, setScriptOpen] = useState(false)
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const { playing, progress, play, pause, resume, stop } = useScriptPlayer(overview?.script ?? null)
+
+  // Poll every 4s while audio is in a non-terminal state
+  useEffect(() => {
+    const isPending = overview != null && !TERMINAL_STATUSES.has(overview.status)
+    if (isPending && !pollRef.current) {
+      pollRef.current = setInterval(refetch, 4000)
+    } else if (!isPending && pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    }
+  }, [overview, refetch])
 
   // Refetch when reverb signals audio is ready
   useEffect(() => {
-    if (audioReadySignal) {
-      refetch()
-    }
+    if (audioReadySignal) refetch()
   }, [audioReadySignal, refetch])
 
   const handleGenerate = async () => {
@@ -32,8 +111,6 @@ export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props
       toast.error('Failed to start audio generation')
     }
   }
-
-  const audioSrc = `/api/notebooks/${notebookId}/audio-overview/stream?token=${token}`
 
   const formatDuration = (seconds: number | null) => {
     if (!seconds) return ''
@@ -52,7 +129,7 @@ export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props
         </p>
       </div>
 
-      {/* Status-aware UI */}
+      {/* Not generated yet or failed */}
       {(!overview || overview.status === 'failed') && (
         <div className="space-y-3">
           {overview?.status === 'failed' && (
@@ -73,6 +150,7 @@ export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props
         </div>
       )}
 
+      {/* Generating in progress */}
       {(overview?.status === 'pending' || overview?.status === 'generating') && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -84,11 +162,12 @@ export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props
           </div>
           <div className="text-center">
             <p className="text-sm text-slate-300 font-medium">Generating your podcast…</p>
-            <p className="text-xs text-slate-500 mt-1">This usually takes 30–90 seconds</p>
+            <p className="text-xs text-slate-500 mt-1">This usually takes 15–30 seconds</p>
           </div>
         </motion.div>
       )}
 
+      {/* Ready — show player */}
       {overview?.status === 'ready' && (
         <AnimatePresence>
           <motion.div
@@ -96,7 +175,7 @@ export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props
             animate={{ opacity: 1, y: 0 }}
             className="space-y-3"
           >
-            {/* Audio player */}
+            {/* Player card */}
             <div className="backdrop-blur-sm bg-white/5 border border-white/10 rounded-xl p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shrink-0">
@@ -107,20 +186,54 @@ export default function AudioOverviewTab({ notebookId, audioReadySignal }: Props
                 <div>
                   <p className="text-xs font-medium text-white">Audio Overview</p>
                   {overview.duration_seconds && (
-                    <p className="text-[10px] text-slate-500">{formatDuration(overview.duration_seconds)}</p>
+                    <p className="text-[10px] text-slate-500">{formatDuration(overview.duration_seconds)} estimated</p>
                   )}
                 </div>
               </div>
-              <audio
-                ref={audioRef}
-                src={audioSrc}
-                controls
-                className="w-full h-8"
-                style={{ accentColor: '#7c3aed' }}
-              />
+
+              {/* Progress bar */}
+              <div className="w-full bg-white/10 rounded-full h-1.5">
+                <div
+                  className="bg-violet-500 h-1.5 rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+
+              {/* Controls */}
+              <div className="flex items-center gap-2">
+                {!playing ? (
+                  <button
+                    onClick={progress > 0 ? resume : play}
+                    className="flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                  >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                    </svg>
+                    {progress > 0 ? 'Resume' : 'Listen'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={pause}
+                    className="flex items-center gap-1.5 bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                  >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                    </svg>
+                    Pause
+                  </button>
+                )}
+                {(playing || progress > 0) && (
+                  <button
+                    onClick={stop}
+                    className="text-slate-400 hover:text-white px-2 py-1.5 rounded-lg text-xs transition-all"
+                  >
+                    Stop
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* Regenerate + Script */}
+            {/* Regenerate + Script buttons */}
             <div className="flex gap-2">
               <button
                 onClick={handleGenerate}

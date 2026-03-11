@@ -15,16 +15,34 @@ class ContentGenerationController extends Controller
             'type' => ['required', 'string', 'in:study_guide,faq,timeline,briefing'],
         ]);
 
+        $start = microtime(true);
+        $type  = $validated['type'];
+
         try {
-            $agent = new KnowledgeAgent($request->user(), $notebookId);
-            $content = $agent->generateContent($validated['type']);
+            $agent   = new KnowledgeAgent($request->user(), $notebookId);
+            $content = $agent->generateContent($type);
+
+            Log::info('content.generated', [
+                'operation'      => 'generate_content',
+                'status'         => 'success',
+                'user_id'        => $request->user()?->id,
+                'notebook_id'    => $notebookId,
+                'content_type'   => $type,
+                'content_length' => strlen($content),
+                'duration_ms'    => round((microtime(true) - $start) * 1000, 2),
+            ]);
 
             return response()->json(['content' => $content]);
         } catch (\Throwable $e) {
-            Log::error('Content generation failed', [
-                'type' => $validated['type'],
-                'notebook_id' => $notebookId,
-                'error' => $e->getMessage(),
+            Log::error('content.generate_failed', [
+                'operation'    => 'generate_content',
+                'status'       => 'failed',
+                'user_id'      => $request->user()?->id,
+                'notebook_id'  => $notebookId,
+                'content_type' => $type,
+                'error'        => $e->getMessage(),
+                'error_class'  => get_class($e),
+                'duration_ms'  => round((microtime(true) - $start) * 1000, 2),
             ]);
 
             return response()->json(['error' => 'Content generation failed'], 500);

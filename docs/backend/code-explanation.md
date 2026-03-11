@@ -1,310 +1,229 @@
 # Backend Code Explanation
 
-## Core Components
+Deep-dives into the most important backend components.
 
-### 1. ChatController.php
+---
 
-**Purpose**: Handles all chat-related HTTP requests including regular and streaming responses.
+## KnowledgeAgent
 
-**Key Methods**:
+`app/Ai/Agents/KnowledgeAgent.php`
 
-#### `chat(Request $request)`
-- **Purpose**: Handles standard chat requests with immediate response
-- **Validation**: Requires `notebook_id` and `message` fields
-- **Process**:
-  1. Logs request details (user, notebook, message, IP, user agent)
-  2. Validates input parameters
-  3. Creates KnowledgeAgent instance
-  4. Processes message through AI agent
-  5. Returns JSON response with AI answer
-- **Error Handling**: Comprehensive exception logging and 500 error response
+The heart of the application. Implements `Laravel\Ai\Contracts\Agent` and uses the `Promptable` trait which gives it `$this->prompt()` and `$this->stream()` methods bound to the Laravel AI package.
 
-#### `stream(Request $request): StreamedResponse`
-- **Purpose**: Handles real-time streaming chat responses
-- **Authentication**: Supports both standard auth and token-based auth via query parameter
-- **Process**:
-  1. Token authentication check for EventSource compatibility
-  2. Input validation
-  3. Creates KnowledgeAgent
-  4. Sets up Server-Sent Events stream
-  5. Streams response chunks with progress logging
-- **Response Headers**:
-  - `Content-Type: text/event-stream`
-  - `Cache-Control: no-cache, no-transform`
-  - `X-Accel-Buffering: no`
+### Constructor
 
-**Logging**: Extensive logging at every step for debugging and monitoring
-
-### 2. StreamAuth Middleware
-
-**Purpose**: Custom authentication middleware for streaming endpoints.
-
-**Features**:
-- Supports standard Laravel authentication
-- Token-based authentication via query parameter (for EventSource)
-- Logs authentication attempts
-- Returns 401 for unauthenticated requests
-
-**Process**:
-1. Check if user already authenticated → continue
-2. Check for token in query parameters
-3. Validate token with Sanctum
-4. Set authenticated user if token valid
-5. Return 401 if no valid authentication
-
-### 3. KnowledgeAgent.php
-
-**Purpose**: Main AI agent for processing chat requests.
-
-**Constructor**:
-- Accepts optional authenticated user
-- Logs agent initialization with user details
-
-#### `prompt(string $message)`
-- **Purpose**: Process message and return immediate response
-- **Current Implementation**: Returns placeholder response
-- **Response Format**: Anonymous class with `content()` method
-- **Logging**: Request and response details
-
-#### `stream(string $message): \Generator`
-- **Purpose**: Stream responses word by word
-- **Process**:
-  1. Create response text
-  2. Split into words
-  3. Yield each word as a chunk
-  4. Progress logging every 5 words
-- **Generator Pattern**: Uses PHP generators for memory efficiency
-
-**Note**: Currently returns placeholder responses - AI integration pending
-
-## Configuration Files
-
-### AI Configuration (`config/ai.php`)
-
-**Structure**:
-- **Default Providers**: Different providers for different AI tasks
-- **Caching Configuration**: Embedding caching settings
-- **Provider Definitions**: 13+ AI providers with API key configuration
-
-**Provider Support**:
-- **Text Generation**: OpenAI, Anthropic, Gemini, Azure, Groq, DeepSeek, Mistral, Ollama, OpenRouter, xAI
-- **Image Generation**: Gemini (default), others configurable
-- **Audio Processing**: OpenAI (default)
-- **Embeddings**: OpenAI (default)
-- **Reranking**: Cohere (default)
-
-**Environment Variables**:
-Each provider requires corresponding `API_KEY` environment variable.
-
-### Composer Configuration
-
-**Key Dependencies**:
-- **Laravel Framework 12.0**: Core framework
-- **Laravel AI 0.2.5**: AI integration layer
-- **Laravel Sanctum 4.0**: API authentication
-- **smalot/pdfparser 2.0**: PDF processing
-
-**Development Scripts**:
-- **`setup`**: Complete project initialization
-- **`dev`**: Concurrent development server (PHP, queue, logs, Vite)
-- **`test`**: Test suite execution
-
-## API Routes (`routes/api.php`)
-
-### Authentication Routes (Guest)
 ```php
-POST /api/register    // User registration
-POST /api/login       // User login
+public function __construct(
+    public ?Authenticatable $user = null,
+    private int|string|null $notebookId = null,
+)
 ```
 
-### Protected Routes (Auth:sanctum)
+The `notebookId` is critical — it scopes all vector searches to only the documents belonging to this notebook, preventing cross-notebook data leakage.
+
+### `instructions(): string`
+
+This is the system prompt. It's dynamic: when `$retrievedContext` is empty (no documents uploaded yet) it tells the user to upload documents. When context is available it injects the RAG chunks inside `<context>` XML tags — a pattern that works particularly well with instruction-following models like Llama 3.3.
+
 ```php
-GET /api/user         // Current user info
-POST /api/logout      // User logout
-GET /api/documents    // List documents
-POST /api/documents   // Upload document
-POST /api/chat        // Send chat message
-POST /api/images/generate  // Generate images
-POST /api/audio/transcribe  // Transcribe audio
+return $base . "\n\n<context>\n{$this->retrievedContext}\n</context>";
 ```
 
-### Streaming Route (Custom Auth)
-```php
-GET/POST /api/chat/stream  // Stream chat responses
+### `chat()` — Synchronous path
+
+```
+retrieveContext(message)
+  → Lab::Groq prompt (llama-3.3-70b-versatile)
+  → logUsage() → AiUsageLog::create()
+  → return anonymous class { content(), sources }
 ```
 
-## Authentication System
+The anonymous class is returned instead of a named DTO to keep things lightweight. Callers destructure `$response->content()` and `$response->sources`.
 
-### Laravel Sanctum Integration
+### `chatStream()` — Streaming path
 
-**Features**:
-- API token generation and management
-- Token-based authentication for API endpoints
-- Ability to revoke tokens
-- Token expiration handling
+```php
+$stream = $this->stream($message, provider: Lab::Groq, model: 'llama-3.3-70b-versatile');
 
-**Usage in Controllers**:
-- Standard middleware: `auth:sanctum`
-- Custom middleware: `stream.auth` for streaming endpoints
-
-### Token Authentication Flow
-
-1. User logs in → receives API token
-2. Token stored in frontend (localStorage)
-3. Token sent with API requests (Authorization header)
-4. Token validated by Sanctum middleware
-5. User authenticated for request duration
-
-## Error Handling & Logging
-
-### Comprehensive Logging Strategy
-
-**Request Logging**:
-- User ID, notebook ID, message content
-- IP address, user agent
-- Authentication status
-- Request timestamps
-
-**Error Logging**:
-- Full exception messages
-- Stack traces
-- Context information (user, request details)
-- Error categorization
-
-**Progress Logging**:
-- Stream progress monitoring
-- Chunk count tracking
-- Performance metrics
-
-### Error Response Format
-
-**Standard Error**:
-```json
-{
-  "error": "Human-readable error message"
+foreach ($stream as $event) {
+    if (!$event instanceof TextDelta) continue;
+    yield new class($event->delta) { public function text(): string {...} };
 }
 ```
 
-**Stream Error**:
-```json
-{
-  "error": "Stream processing failed"
+The Laravel AI streaming API returns a mix of event types (`TextDelta`, `InputTokens`, `OutputTokens`, etc.). We filter to `TextDelta` only and yield a lightweight anonymous object. The controller drives this generator and flushes each chunk to the HTTP response immediately.
+
+### `retrieveContext()` — Private
+
+This is where RAG happens. Importantly, it catches all `\Throwable` — if the embedding service is unavailable or pgvector throws, we fall back to an empty context and let the LLM respond without document context rather than surfacing a 500 error to the user.
+
+```php
+$chunks = $embeddingService->searchSimilarChunks($message, $this->notebookId, limit: 5);
+
+foreach ($chunks as $chunk) {
+    $contextParts[]  = "Source: {$chunk->document_title}\n{$chunk->content}";
+    $this->sources[] = ['title' => $chunk->document_title, 'document_id' => (int) $chunk->document_id];
+}
+
+$this->retrievedContext = implode("\n\n---\n\n", $contextParts);
+```
+
+Sources are stored on the instance so `getSources()` can be called after streaming completes (the controller needs them to emit the `{"sources": [...]}` SSE event at the end of the stream).
+
+---
+
+## ChatController
+
+`app/Http/Controllers/ChatController.php`
+
+### `stream()` — SSE endpoint
+
+The streaming response uses Laravel's `response()->stream()` which accepts a closure. Inside the closure:
+
+1. Call `$agent->chatStream($message)` — starts RAG retrieval then opens the Groq stream
+2. Iterate the generator, writing each chunk as an SSE line:
+   ```php
+   echo 'data: ' . json_encode(['delta' => $chunk], JSON_THROW_ON_ERROR) . "\n\n";
+   @ob_flush(); @flush();
+   ```
+3. After the generator exhausts, emit sources and the `done` sentinel
+4. Persist both messages to `chat_messages` (with sources in `metadata`)
+
+The `@ob_flush()` / `@flush()` pair bypasses output buffering at both PHP and web server levels — essential for true streaming. The `X-Accel-Buffering: no` header disables nginx proxy buffering.
+
+### Token auth for EventSource
+
+The browser `EventSource` API does not support custom headers. Rather than forcing users through a WebSocket upgrade just for auth, we accept the Sanctum token as a query parameter and validate it inline:
+
+```php
+if ($request->has('token') && !auth()->check()) {
+    $accessToken = PersonalAccessToken::findToken($request->input('token'));
+    if ($accessToken) {
+        auth()->setUser($accessToken->tokenable);
+    }
 }
 ```
 
-## Database Configuration
+This happens before validation so `$request->user()` works normally for the rest of the method.
 
-### Environment Setup
+### `history()` — Chat history
 
-**Default Configuration**:
-- **Connection**: SQLite (development)
-- **Docker**: PostgreSQL with pgvector
-- **Cache**: Database or Redis
-- **Sessions**: Database
-- **Queue**: Database
+```php
+ChatMessage::query()
+    ->where('user_id', $request->user()->id)
+    ->where('notebook_id', $notebookId)
+    ->latest()
+    ->take(50)
+    ->get()
+    ->reverse()
+    ->values();
+```
 
-### Migration System
+Fetches the 50 most recent messages and reverses them to chronological order. The `->values()` re-indexes the collection so the frontend receives a clean JSON array.
 
-**Purpose**: Database schema version control
-**Location**: `database/migrations/`
-**Features**: Rollback support, seeding capabilities
+---
 
-## Development Tools
+## EmbeddingService
 
-### Laravel Artisan Commands
+`app/Services/EmbeddingService.php`
 
-**Available Commands**:
-- `php artisan serve` - Development server
-- `php artisan migrate` - Database migrations
-- `php artisan tinker` - Interactive REPL
-- `php artisan queue:work` - Queue processing
-- `php artisan pail` - Real-time log monitoring
+### Embedding generation
 
-### Testing Framework
+Uses `Laravel\Ai\Facades\Embeddings` with `Lab::VoyageAI` and model `voyage-3`. The 1024-dim output balances quality and storage cost — each chunk vector takes 4KB as a `float4[]`.
 
-**PHPUnit Integration**:
-- Feature and unit tests
-- Database testing with transactions
-- API endpoint testing
-- Model factory support
+### `searchSimilarChunks()`
 
-## Security Features
+The pgvector query is scoped to documents that belong to the given notebook:
 
-### Input Validation
+```sql
+SELECT document_chunks.*
+FROM document_chunks
+JOIN documents ON documents.id = document_chunks.document_id
+WHERE documents.notebook_id = ?
+  AND documents.status = 'ready'
+ORDER BY embedding <=> '[query_vector]'   -- cosine distance operator
+LIMIT 5
+```
 
-**Request Validation**:
-- Required field validation
-- Type checking (string, integer, etc.)
-- Custom validation rules
-- Error message customization
+The `<=>` operator is pgvector's cosine distance. Results are the 5 most semantically similar chunks across all ready documents in the notebook.
 
-### Authentication Security
+---
 
-**Token Management**:
-- Secure token generation
-- Token revocation capability
-- Expiration handling
-- Scope-based access control
+## ChunkingService
 
-### CORS & Headers
+`app/Services/ChunkingService.php`
 
-**Security Headers**:
-- CORS configuration
-- Content-Type validation
-- Cache control for streaming
-- Buffering prevention for real-time responses
+Splits document text into overlapping segments. Key parameters:
 
-## Performance Considerations
+- **Chunk size**: 2000 characters — fits comfortably within Groq's context window while providing enough context per chunk
+- **Overlap**: 200 characters — prevents answers from being split at chunk boundaries
 
-### Streaming Implementation
+The service attempts to split on sentence/paragraph boundaries before falling back to hard character cuts.
 
-**Memory Efficiency**:
-- PHP generators for memory-efficient streaming
-- Chunk-by-chunk response delivery
-- Immediate output flushing
+---
 
-**Real-time Features**:
-- Server-Sent Events (SSE)
-- No buffering for immediate delivery
-- Progressive response rendering
+## ProcessUploadedDocument Job
 
-### Caching Strategy
+`app/Jobs/ProcessUploadedDocument.php`
 
-**AI Response Caching**:
-- Configurable embedding caching
-- Store-based caching (Redis, database)
-- Cache invalidation strategies
+Runs on the `redis` queue. The job is idempotent — it resets chunk data on retry, so a failed document can be reprocessed without leaving orphaned chunks.
 
-## Future Enhancements
+Document format support:
+- **PDF** — `smalot/pdfparser` extracts raw text from each page
+- **DOCX** — `phpoffice/phpword` reads paragraphs
+- **CSV** — `league/csv` joins all cells as text
+- **TXT** — direct file read
 
-### AI Integration
+Status flow: `uploaded → processing → ready` (or `failed` if an exception escapes the try/catch).
 
-**Pending Implementation**:
-- Actual AI provider integration
-- Vector database connectivity
-- RAG (Retrieval-Augmented Generation) system
-- Document embedding and search
+---
 
-### Advanced Features
+## Middleware Pipeline
 
-**Planned Features**:
-- Multi-modal AI capabilities
-- Advanced document processing
-- Real-time collaboration
-- Advanced user management
+### `InitializeTrace`
 
-## Code Quality
+Runs very early in the stack. Generates `uniqid('req_', true)` and stores it via `$request->attributes->set('request_id', ...)`. Every subsequent log processor reads this value and adds it to the log record context. In Nightwatch, you can filter all logs from a single HTTP request by `request_id`.
 
-### Standards
+### `LogRequests`
 
-**PHP Standards**:
-- PSR-4 autoloading
-- Type hints and return types
-- Comprehensive documentation
-- Error handling best practices
+Logs at `info` level on request start (method, path, user_id) and on response completion (status code, duration_ms). Provides an audit trail without needing to instrument individual controllers.
 
-**Laravel Conventions**:
-- MVC pattern adherence
-- Service container usage
-- Middleware pipeline
-- Eloquent ORM patterns
+### `StreamAuth`
+
+Applied only to `/api/chat/stream`. Checks standard Sanctum auth first (for non-browser clients), then falls through to the query-param token approach for browser `EventSource` clients.
+
+---
+
+## Logging Architecture
+
+```
+Controller/Agent/Job
+        │
+        ▼
+  Log::channel('nightwatch')->info(...)
+  Log::channel('ai_events')->info(...)
+        │
+        ▼
+  Monolog Processors (run on every record)
+  ├─ RequestIdProcessor   → adds request_id
+  ├─ UserContextProcessor → adds user_id, user_email
+  ├─ AIContextProcessor   → adds ai_provider, model (ai_events channel only)
+  └─ EnvironmentProcessor → adds app_env, app_version
+        │
+        ▼
+  Nightwatch driver → UDP → nightwatch:agent container → Nightwatch cloud
+```
+
+All log calls use structured context arrays rather than interpolated strings — this allows Nightwatch to index and filter on individual fields (e.g., show all logs where `notebook_id = 42 AND duration_ms > 1000`).
+
+---
+
+## Error Handling Philosophy
+
+1. **User-visible errors** — Controllers return JSON with a human-readable `error` field and an appropriate HTTP status. Raw exception messages never reach the client in production.
+
+2. **AI fallbacks** — If RAG retrieval fails, `retrieveContext()` swallows the error and continues with empty context. The user gets a response (the LLM will say it has no context) rather than a 500.
+
+3. **Stream errors** — If the Groq stream fails mid-response, the controller catches the exception inside the streaming closure and emits a `{"error": "..."}` SSE event so the frontend can display it gracefully rather than just hanging.
+
+4. **Job retries** — `ProcessUploadedDocument` is configured with `$tries = 3`. Failed documents get their status set to `failed` after exhausting retries, and the user sees a clear status indicator in the UI.

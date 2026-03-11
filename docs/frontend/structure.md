@@ -1,339 +1,195 @@
 # Frontend Directory Structure
 
-## Root Directory Files
+```
+frontend/
+├── index.html                              ← Vite entry point
+├── vite.config.ts                          ← React plugin, Tailwind plugin, API proxy
+├── tsconfig.json                           ← Project references root
+├── tsconfig.app.json                       ← App TS config (verbatimModuleSyntax, strict)
+├── tsconfig.node.json                      ← Node/Vite config TS
+├── eslint.config.js                        ← ESLint 9 flat config
+├── package.json
+├── Dockerfile                              ← Multi-stage: dev | build | production (nginx)
+└── src/
+    ├── main.tsx                            ← ReactDOM.createRoot + Redux Provider + Router
+    ├── App.tsx                             ← Route definitions + ProtectedRoute wiring
+    ├── index.css                           ← Tailwind v4 @import
+    │
+    ├── store/
+    │   ├── index.ts                        ← configureStore (notebookApi + documentApi)
+    │   ├── hooks.ts                        ← useAppDispatch, useAppSelector (typed)
+    │   └── api/
+    │       ├── notebookApi.ts              ← RTK Query: getNotebooks, create, update, delete
+    │       ├── documentApi.ts              ← RTK Query: getDocuments, upload, delete
+    │       └── audioApi.ts                 ← RTK Query: generate audio overview
+    │
+    ├── pages/
+    │   ├── LoginPage.tsx                   ← useActionState (React 19) + Sonner toasts
+    │   ├── DashboardPage.tsx               ← main app shell, notebook + document layout
+    │   ├── SettingsPage.tsx                ← profile, password change, delete account
+    │   └── UsagePage.tsx                   ← AI usage stats + Recharts bar chart
+    │
+    ├── components/
+    │   ├── ProtectedRoute.tsx              ← redirects to /login if no auth_token
+    │   ├── NotebookSidebar.tsx             ← list + create (useOptimistic), select, delete
+    │   ├── TopNav.tsx                      ← user menu, nav links
+    │   ├── ChatPanel.tsx                   ← SSE streaming, history, citations, export
+    │   ├── DocumentUpload.tsx              ← upload + 3s status polling
+    │   ├── UsageModal.tsx                  ← quick usage popup
+    │   └── studio/
+    │       └── AudioOverviewTab.tsx        ← generate + stream + play audio overview
+    │
+    ├── components/ui/                      ← Shadcn/ui-style primitives
+    │   ├── Button.tsx                      ← CVA variants: default, outline, ghost, danger
+    │   └── Input.tsx                       ← CVA variants: default, error
+    │
+    └── lib/
+        ├── streaming.ts                    ← createChatStream() EventSource wrapper
+        ├── export.ts                       ← exportAsMarkdown() chat export
+        └── utils.ts                        ← cn() (clsx + tailwind-merge)
+```
 
-### Configuration Files
-- **`package.json`** - Node.js dependencies and project configuration
-- **`package-lock.json`** - Locked dependency versions
-- **`tsconfig.json`** - TypeScript configuration
-- **`tsconfig.app.json`** - Application-specific TypeScript config
-- **`tsconfig.node.json`** - Node.js TypeScript configuration
-- **`vite.config.ts`** - Vite build tool configuration
-- **`eslint.config.js`** - ESLint linting configuration
-- **`.gitignore`** - Git ignore patterns
+---
 
-### Build & Deployment
-- **`Dockerfile`** - Docker container configuration
-- **`index.html`** - Application entry point HTML
+## Key File Details
 
-### Documentation
-- **`README.md`** - Project documentation and setup instructions
+### `src/main.tsx`
 
-## Source Code (`src/`)
+```tsx
+<Provider store={store}>
+  <BrowserRouter>
+    <App />
+  </BrowserRouter>
+</Provider>
+```
 
-### Application Entry Point
-- **`main.tsx`** - React application bootstrap and rendering
-- **`App.tsx`** - Root component with routing configuration
+Redux `Provider` wraps the entire tree so RTK Query hooks are available everywhere.
 
-### Styling
-- **`index.css`** - Global CSS styles and TailwindCSS imports
-- **`App.css`** - Application-specific styles
+### `src/App.tsx`
 
-### Components (`src/components/`)
+Route map:
+```
+/login          → LoginPage (public)
+/               → DashboardPage (protected)
+/settings       → SettingsPage (protected)
+/usage          → UsagePage (protected)
+```
 
-#### ChatPanel.tsx
-**Purpose**: Interactive chat interface component
-**Features**:
-- Message input and display
-- Real-time streaming responses
-- Message history management
-- Notebook selection integration
-**Size**: 2,930 bytes
+`ProtectedRoute` checks `localStorage.getItem('auth_token')`. If null, renders `<Navigate to="/login" />`.
 
-#### DocumentUpload.tsx
-**Purpose**: Document upload interface
-**Features**:
-- File selection and upload
-- Upload progress tracking
-- File validation
-- Success/error feedback
-**Size**: 2,261 bytes
+### `src/store/api/notebookApi.ts`
 
-#### ProtectedRoute.tsx
-**Purpose**: Authentication guard component
-**Features**:
-- Authentication status checking
-- Redirect logic for unauthenticated users
-- Loading state handling
-- Children component rendering
-**Size**: 476 bytes
+RTK Query `createApi` with `baseQuery: fetchBaseQuery({ baseUrl: '/api', ... })`. Endpoints:
+- `getNotebooks` → `GET /api/notebooks` (provides tag `Notebook`)
+- `createNotebook` → `POST /api/notebooks` (invalidates `Notebook`)
+- `updateNotebook` → `PUT /api/notebooks/{id}` (invalidates `Notebook`)
+- `deleteNotebook` → `DELETE /api/notebooks/{id}` (invalidates `Notebook`)
 
-### Pages (`src/pages/`)
+The `prepareHeaders` callback reads `auth_token` from localStorage and injects `Authorization: Bearer <token>` on every request.
 
-#### DashboardPage.tsx
-**Purpose**: Main application dashboard
-**Features**:
-- Chat interface integration
-- Document management
-- User information display
-- Navigation components
-**Size**: 1,274 bytes
+### `src/store/api/documentApi.ts`
 
-#### LoginPage.tsx
-**Purpose**: User authentication interface
-**Features**:
-- Login form with email/password
-- Form validation and error handling
-- Loading states during authentication
-- Redirect after successful login
-**Size**: 4,648 bytes
+Same pattern as notebookApi. Upload uses `FormData` with `content-type: multipart/form-data`. Provides/invalidates `Document` tags scoped to `notebookId`.
 
-### Hooks (`src/hooks/`)
-**Purpose**: Custom React hooks for logic reuse
-**Contents**: Custom hooks for authentication, API calls, and state management
+### `src/pages/LoginPage.tsx`
 
-### Utilities (`src/lib/`)
+Uses React 19's `useActionState` hook for form submission, which provides a pending state and result without external form libraries. Error messages displayed inline; success triggers `localStorage.setItem('auth_token', token)` then `navigate('/')`.
 
-#### streaming.ts
-**Purpose**: Real-time streaming functionality
-**Features**:
-- EventSource management for Server-Sent Events
-- Stream data handling and parsing
-- Error management and cleanup
-- Token authentication for streams
-**Size**: 1,042 bytes
+### `src/components/ChatPanel.tsx`
 
-#### Additional utilities (inferred)
-- API client configuration
-- Authentication helpers
-- Type definitions
-- Constants and configuration
+State shape:
+```ts
+messages: Array<{role, content, sources?, id}>
+streamingContent: string          // buffer while streaming
+isStreaming: boolean
+suggestedQuestions: string[]
+```
 
-### Assets (`src/assets/`)
-**Purpose**: Static assets and resources
-**Contents**: Images, icons, fonts, and other static files
+On submit:
+1. Append user message to `messages` optimistically
+2. Call `createChatStream(notebookId, message, token, callbacks)` from `lib/streaming.ts`
+3. `onDelta`: append to `streamingContent`
+4. `onSources`: store on last message
+5. `onDone`: move `streamingContent` into `messages`, clear buffer
+6. `onError`: show Sonner toast, clear streaming state
 
-## Configuration Details
+### `src/lib/streaming.ts`
 
-### Package.json Analysis
+`createChatStream()` constructs the EventSource URL with token + params, attaches `onmessage` and `onerror` handlers, and returns a cleanup function that closes the EventSource. Callers invoke the cleanup in a `useEffect` return or on component unmount.
 
-#### Dependencies
-```json
-{
-  "axios": "^1.7.9",           // HTTP client
-  "framer-motion": "^12.4.0",  // Animation library
-  "react": "^19.2.0",          // React core
-  "react-dom": "^19.2.0",      // React DOM renderer
-  "react-router-dom": "^7.0.2" // Routing library
+### `src/components/NotebookSidebar.tsx`
+
+`useOptimistic` usage:
+```ts
+const [optimisticNotebooks, addOptimistic] = useOptimistic(notebooks, (state, newNotebook) => [...state, newNotebook])
+```
+
+When the user clicks "New Notebook", the UI adds a placeholder instantly. If the server request fails, React automatically reverts to the previous state.
+
+### `src/components/DocumentUpload.tsx`
+
+Polling logic:
+```ts
+useEffect(() => {
+  if (!hasProcessingDocs) return
+  const interval = setInterval(() => refetch(), 3000)
+  return () => clearInterval(interval)
+}, [hasProcessingDocs])
+```
+
+`hasProcessingDocs` is derived from RTK Query cache — no manual state needed. When the last document transitions to `ready`, the effect cleanup fires and polling stops.
+
+### `src/lib/utils.ts`
+
+```ts
+import { clsx, type ClassValue } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
 }
 ```
 
-#### Development Dependencies
-```json
-{
-  "@eslint/js": "^9.39.1",           // ESLint configuration
-  "@tailwindcss/vite": "^4.2.1",     // TailwindCSS Vite plugin
-  "@types/node": "^24.10.1",         // Node.js type definitions
-  "@types/react": "^19.2.7",         // React type definitions
-  "@types/react-dom": "^19.2.3",     // React DOM types
-  "@vitejs/plugin-react": "^5.1.1",  // Vite React plugin
-  "autoprefixer": "^10.4.27",        // CSS autoprefixer
-  "eslint": "^9.39.1",               // Code linting
-  "eslint-plugin-react-hooks": "^7.0.1", // React hooks linting
-  "eslint-plugin-react-refresh": "^0.4.24", // React refresh linting
-  "globals": "^16.5.0",              // Global variables for ESLint
-  "postcss": "^8.5.8",               // CSS processing
-  "tailwindcss": "^4.2.1",           // CSS framework
-  "typescript": "~5.9.3",            // TypeScript compiler
-  "typescript-eslint": "^8.48.0",    // TypeScript ESLint
-  "vite": "^7.3.1"                   // Build tool
-}
-```
+Used everywhere for conditional class application without specificity conflicts.
 
-#### Scripts
-```json
-{
-  "dev": "vite",                    // Development server
-  "build": "tsc -b && vite build", // Production build
-  "lint": "eslint .",               // Code linting
-  "preview": "vite preview"         // Preview production build
-}
-```
+---
 
-### Vite Configuration (`vite.config.ts`)
+## Vite Configuration
 
-#### Plugin Configuration
-```typescript
+```ts
+// vite.config.ts
 export default defineConfig({
-  plugins: [
-    react(),      // React Fast Refresh
-    tailwindcss() // TailwindCSS integration
-  ],
+  plugins: [react(), tailwindcss()],
+  server: {
+    host: '0.0.0.0',   // required for Docker
+    port: 5173,
+    proxy: {
+      '/api':     'http://backend:8000',
+      '/sanctum': 'http://backend:8000',
+    },
+  },
 })
 ```
 
-#### Development Server Proxy
-```typescript
-server: {
-  proxy: {
-    '/api': 'http://backend:8000',      // API proxy to backend
-    '/sanctum': 'http://backend:8000',  // Sanctum CSRF proxy
-  },
+The proxy eliminates CORS issues during development — all requests go through `localhost:5173` from the browser's perspective.
+
+---
+
+## TypeScript Configuration Highlights
+
+`tsconfig.app.json` key settings:
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  }
 }
 ```
 
-**Purpose**: Forward API requests to backend during development
-**Benefits**: Avoid CORS issues, seamless development experience
-
-### TypeScript Configuration
-
-#### tsconfig.json (Root)
-- **Base TypeScript configuration**
-- **Project references** to app and node configs
-- **Compiler options** for overall project
-
-#### tsconfig.app.json (Application)
-- **React-specific TypeScript configuration**
-- **JSX support** for React components
-- **Module resolution** for modern imports
-- **Strict type checking** enabled
-
-#### tsconfig.node.json (Node.js)
-- **Node.js TypeScript configuration**
-- **Vite configuration** type support
-- **ES modules** support
-
-### ESLint Configuration (`eslint.config.js`)
-
-#### Linting Rules
-- **React Hooks** rules for proper hook usage
-- **React Refresh** rules for Fast Refresh compatibility
-- **TypeScript** integration for type checking
-- **Modern JavaScript** standards
-
-#### Global Configuration
-- **Browser environment** globals
-- **ES2022** language features
-- **Module** system support
-
-## Build Process
-
-### Development Build
-```bash
-npm run dev
-```
-- **Vite dev server** with Hot Module Replacement
-- **TypeScript compilation** with error checking
-- **Proxy setup** for API requests
-- **Fast Refresh** for React components
-
-### Production Build
-```bash
-npm run build
-```
-**Process**:
-1. **TypeScript compilation** (`tsc -b`)
-2. **Vite bundling** (`vite build`)
-3. **Asset optimization** and minification
-4. **Code splitting** for optimal loading
-
-### Build Output
-- **dist/** directory - Production-ready files
-- **Optimized assets** - Minified CSS and JavaScript
-- **Source maps** - For debugging (development)
-- **Asset hashing** - Cache busting
-
-## Development Workflow
-
-### File Organization Strategy
-
-#### Component-Based Structure
-- **Pages** - Main application screens
-- **Components** - Reusable UI components
-- **Hooks** - Custom React hooks
-- **Lib** - Utilities and configurations
-- **Assets** - Static resources
-
-#### Import Patterns
-```typescript
-// React imports
-import { useState, useEffect } from 'react'
-
-// Component imports
-import { ChatPanel } from './components/ChatPanel'
-
-// Utility imports
-import { createChatStream } from './lib/streaming'
-```
-
-### Code Conventions
-
-#### TypeScript Usage
-- **Strict typing** for all components
-- **Interface definitions** for props and state
-- **Generic types** for reusable components
-- **Enum usage** for constants
-
-#### React Patterns
-- **Functional components** with hooks
-- **Props destructuring** for clean interfaces
-- **Custom hooks** for logic reuse
-- **Error boundaries** for error handling
-
-## Asset Management
-
-### Static Assets
-- **Images** stored in `src/assets/`
-- **Icons** and graphics
-- **Fonts** and typography
-- **CSS files** for custom styles
-
-### Build Assets
-- **Automatic optimization** during build
-- **Hashing** for cache busting
-- **Compression** for smaller file sizes
-- **Lazy loading** for better performance
-
-## Testing Structure (Planned)
-
-### Test Organization
-```
-src/
-├── __tests__/          # Test files
-├── components/         # Component tests
-├── pages/             # Page tests
-├── hooks/             # Hook tests
-└── utils/             # Utility tests
-```
-
-### Testing Tools
-- **React Testing Library** - Component testing
-- **Jest** - Test runner
-- **Vitest** - Vite-integrated testing
-- **Cypress** - E2E testing (optional)
-
-## Performance Considerations
-
-### Bundle Optimization
-- **Code splitting** with React.lazy
-- **Tree shaking** for unused code
-- **Dynamic imports** for heavy dependencies
-- **Bundle analysis** for size monitoring
-
-### Runtime Performance
-- **React.memo** for component memoization
-- **useCallback/useMemo** for expensive computations
-- **Virtual scrolling** for large lists
-- **Debouncing** for user inputs
-
-### Network Performance
-- **API request optimization**
-- **Response caching** strategies
-- **Image optimization** and lazy loading
-- **Service worker** for offline support
-
-## Security Configuration
-
-### Content Security Policy
-- **Script sources** properly defined
-- **Style sources** for CSS loading
-- **Image sources** for asset loading
-- **Connect sources** for API calls
-
-### Development Security
-- **HTTPS** in development (optional)
-- **Environment variables** for sensitive data
-- **Dependency scanning** for vulnerabilities
-- **Secure defaults** for all configurations
-
-This structure provides a modern, scalable foundation for the React frontend with proper separation of concerns, type safety, and development tooling.
+`verbatimModuleSyntax: true` is the strict TypeScript setting that enforces `import type` for type-only imports. This prevents Vite from emitting runtime `import` statements for types, which would cause errors in some bundler configurations.

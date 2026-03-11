@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\PersonalAccessToken;
 
 class StreamAuth
@@ -17,30 +18,36 @@ class StreamAuth
 
         // Handle token authentication via query parameter for EventSource
         if ($request->has('token')) {
-            $token = $request->input('token');
+            $token       = $request->input('token');
             $accessToken = PersonalAccessToken::findToken($token);
-            
+
             if ($accessToken) {
                 $user = $accessToken->tokenable;
                 auth()->setUser($user);
-                
-                \Illuminate\Support\Facades\Log::info('Stream token authentication successful', [
-                    'user_id' => $user->id,
-                    'token_preview' => substr($token, 0, 10) . '...'
+
+                Log::info('stream_auth.success', [
+                    'operation' => 'stream_auth',
+                    'status'    => 'success',
+                    'user_id'   => $user->id,
+                    'path'      => $request->path(),
+                    'ip'        => $request->ip(),
                 ]);
-                
+
                 return $next($request);
             } else {
-                \Illuminate\Support\Facades\Log::warning('Invalid stream token provided', [
-                    'token_preview' => substr($token, 0, 10) . '...'
+                Log::warning('stream_auth.failed', [
+                    'operation' => 'stream_auth',
+                    'status'    => 'invalid_token',
+                    'path'      => $request->path(),
+                    'ip'        => $request->ip(),
                 ]);
             }
         }
 
         // Return 401 if no authentication
         return response()->json([
-            'error' => 'Authentication required',
-            'message' => 'Please provide a valid API token'
+            'error'   => 'Authentication required',
+            'message' => 'Please provide a valid API token',
         ], 401);
     }
 }

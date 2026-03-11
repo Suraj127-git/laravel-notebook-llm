@@ -2,63 +2,65 @@
 
 namespace App\Http\Middleware;
 
+use App\Logging\Processors\RequestIdProcessor;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Logs every HTTP request/response with the trace_id injected by InitializeTrace.
+ * Does NOT generate its own request ID — that is the responsibility of InitializeTrace.
+ */
 class LogRequests
 {
+    // Routes too noisy or irrelevant to log
+    private const SKIP_PATHS = ['sanctum/csrf-cookie', 'up', 'telescope'];
+
     public function handle(Request $request, Closure $next)
     {
         $startTime = microtime(true);
-        $requestId = uniqid('req_', true);
 
-        // Skip logging for certain routes to avoid noise
-        $skipRoutes = ['sanctum/csrf-cookie', 'up', 'telescope'];
-        if (!in_array($request->path(), $skipRoutes)) {
-            Log::info('Request started', [
-                'request_id' => $requestId,
-                'method' => $request->method(),
-                'url' => $request->fullUrl(),
-                'path' => $request->path(),
-                'ip' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-                'user_id' => $request->user()?->id,
-                'has_auth_header' => $request->hasHeader('Authorization'),
-                'auth_header_preview' => $request->hasHeader('Authorization') ? substr($request->header('Authorization'), 0, 20) . '...' : null
-            ]);
+        if (in_array($request->path(), self::SKIP_PATHS, true)) {
+            return $next($request);
         }
+
+        Log::info('http.request', [
+            'operation'  => 'http_request',
+            'method'     => $request->method(),
+            'path'       => $request->path(),
+            'ip'         => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'user_id'    => $request->user()?->id,
+            'trace_id'   => RequestIdProcessor::current(),
+        ]);
 
         try {
             $response = $next($request);
 
-            $duration = round((microtime(true) - $startTime) * 1000, 2);
-
-            if (!in_array($request->path(), $skipRoutes)) {
-                Log::info('Request completed', [
-                    'request_id' => $requestId,
-                    'method' => $request->method(),
-                    'url' => $request->fullUrl(),
-                    'path' => $request->path(),
-                    'status' => $response->getStatusCode(),
-                    'duration_ms' => $duration,
-                    'user_id' => $request->user()?->id,
-                    'ip' => $request->ip()
-                ]);
-            }
+            Log::info('http.response', [
+                'operation'   => 'http_response',
+                'method'      => $request->method(),
+                'path'        => $request->path(),
+                'status'      => $response->getStatusCode(),
+                'user_id'     => $request->user()?->id,
+                'ip'          => $request->ip(),
+                'trace_id'    => RequestIdProcessor::current(),
+                'duration_ms' => round((microtime(true) - $startTime) * 1000, 2),
+            ]);
 
             return $response;
 
-        } catch (\Exception $e) {
-            Log::error('Request failed with exception', [
-                'request_id' => $requestId,
-                'method' => $request->method(),
-                'url' => $request->fullUrl(),
-                'path' => $request->path(),
-                'exception' => $e->getMessage(),
-                'exception_class' => get_class($e),
-                'user_id' => $request->user()?->id,
-                'ip' => $request->ip()
+        } catch (\Throwable $e) {
+            Log::error('http.exception', [
+                'operation'   => 'http_exception',
+                'method'      => $request->method(),
+                'path'        => $request->path(),
+                'user_id'     => $request->user()?->id,
+                'ip'          => $request->ip(),
+                'trace_id'    => RequestIdProcessor::current(),
+                'error'       => $e->getMessage(),
+                'error_class' => get_class($e),
+                'duration_ms' => round((microtime(true) - $startTime) * 1000, 2),
             ]);
 
             throw $e;

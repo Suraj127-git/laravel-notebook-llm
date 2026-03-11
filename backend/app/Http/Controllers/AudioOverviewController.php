@@ -21,7 +21,7 @@ class AudioOverviewController extends Controller
         $overview = AudioOverview::where('notebook_id', $notebookId)->first();
 
         if (! $overview) {
-            return response()->json(null, 404);
+            return response()->json(['error' => 'not_found'], 404);
         }
 
         return response()->json($overview);

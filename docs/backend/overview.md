@@ -1,165 +1,194 @@
-# Laravel NotebookLLM Backend Overview
-
-## Project Overview
-
-Laravel NotebookLLM is a modern AI-powered notebook application backend built with Laravel 12. The application provides chat functionality with AI agents, document management, and multimedia processing capabilities. It's designed as a full-stack solution with containerized deployment using Docker.
+# Backend Overview
 
 ## Technology Stack
 
-### Core Framework
-- **Laravel 12** - Modern PHP framework with latest features
-- **PHP 8.2+** - Minimum PHP version requirement
+| Layer | Technology | Version |
+|---|---|---|
+| Framework | Laravel | 12 |
+| Language | PHP | 8.2+ |
+| LLM | Groq `llama-3.3-70b-versatile` | via `laravel/ai` |
+| Embeddings | Voyage AI `voyage-3` (1024-dim) | via `laravel/ai` |
+| Database | PostgreSQL + pgvector | 16 / 0.7.4 |
+| Cache / Queue | Redis | 7 |
+| WebSockets | Laravel Reverb | 1.x |
+| Auth | Laravel Sanctum | 4.x |
+| Monitoring | Laravel Nightwatch | 1.24 |
+| Testing | PHPUnit | via Laravel |
+| Static Analysis | PHPStan + Larastan | |
+| Code Style | Laravel Pint | |
 
-### AI Integration
-- **Laravel AI (v0.2.5)** - Official Laravel AI package for AI operations
-- **Multiple AI Providers Supported**:
-  - OpenAI (default)
-  - Anthropic Claude
-  - Google Gemini
-  - Azure OpenAI
-  - Groq
-  - DeepSeek
-  - Mistral
-  - Ollama (local)
-  - And many more
+---
 
-### Authentication & Security
-- **Laravel Sanctum (v4.0)** - API authentication with token-based security
-- **Custom Stream Authentication** - Special middleware for streaming endpoints
+## Application Layers
 
-### Database & Storage
-- **PostgreSQL with pgvector** - Primary database with vector extension for embeddings
-- **SQLite** - Default configuration (development)
-- **Redis** - Caching and session storage
-- **MongoDB** - Document storage (configured in Docker)
-
-### Document Processing
-- **smalot/pdfparser (v2.0)** - PDF parsing and extraction
-
-### Development Tools
-- **Laravel Tinker** - Interactive REPL
-- **Laravel Pail** - Real-time log monitoring
-- **PHPUnit** - Testing framework
-- **Laravel Pint** - Code style fixing
-
-## Architecture
-
-### MVC Pattern
-The application follows Laravel's Model-View-Controller pattern with additional layers:
-
-- **Controllers** - Handle HTTP requests and responses
-- **Models** - Data models and business logic
-- **Middleware** - Request processing and authentication
-- **Services** - Business logic and external integrations
-- **Jobs** - Background processing
-
-### AI Agent System
-- **KnowledgeAgent** - Main AI agent for chat functionality
-- **Streaming Support** - Real-time response streaming
-- **Multi-provider Support** - Flexible AI provider configuration
-
-### API Design
-- **RESTful API** - Standard REST endpoints
-- **Server-Sent Events (SSE)** - For real-time streaming
-- **Token-based Authentication** - Secure API access
-
-## Key Features
-
-1. **AI Chat System** - Real-time conversations with AI agents
-2. **Document Management** - Upload, store, and process documents
-3. **Image Generation** - AI-powered image creation
-4. **Audio Transcription** - Convert audio to text
-5. **Streaming Responses** - Real-time AI response streaming
-6. **User Authentication** - Secure user management
-7. **Multi-tenant Support** - Notebook-based organization
-
-## Configuration
-
-### Environment Variables
-The application uses a comprehensive `.env` configuration supporting:
-- Database connections (PostgreSQL, SQLite, MySQL)
-- AI provider API keys
-- Redis configuration
-- File storage settings
-- Mail configuration
-- Cache settings
-
-### AI Provider Configuration
-All major AI providers are pre-configured in `config/ai.php`:
-- OpenAI, Anthropic, Gemini, Azure, Groq, DeepSeek, Mistral
-- Support for embeddings, reranking, audio transcription
-- Flexible provider switching
-
-## Development Setup
-
-### Local Development
-```bash
-composer install
-cp .env.example .env
-php artisan key:generate
-php artisan migrate
-php artisan serve
+```
+HTTP Request
+     │
+     ▼
+Middleware Pipeline
+  ├─ InitializeTrace      → attach request_id to every log line
+  ├─ LogRequests          → structured request/response logging
+  └─ StreamAuth           → token-via-query-param for EventSource endpoints
+     │
+     ▼
+Controllers (thin — validation + orchestration only)
+  ├─ AuthController        → register, login, logout
+  ├─ NotebookController    → CRUD, user_id scoped
+  ├─ DocumentController    → upload → dispatch job
+  ├─ ChatController        → chat, stream, history, suggest-questions
+  ├─ ContentGenerationController → study_guide, faq, timeline, briefing
+  ├─ AudioOverviewController     → notebook audio summary
+  └─ UserController        → profile, password, delete, usage stats
+     │
+     ▼
+Services / Agents
+  ├─ KnowledgeAgent        → RAG retrieval + Groq LLM + streaming
+  ├─ EmbeddingService      → Voyage AI embed + pgvector similarity search
+  ├─ ChunkingService        → text → 2000-char chunks (200-char overlap)
+  └─ BusinessEventLogger   → structured AI event logging → ai_events channel
+     │
+     ▼
+Jobs (Redis-backed queue)
+  ├─ ProcessUploadedDocument  → extract text → chunk → embed → store
+  └─ GenerateAudioOverview    → notebook content → audio synthesis
+     │
+     ▼
+Data Layer
+  ├─ PostgreSQL (Eloquent ORM)
+  │   ├─ users, notebooks
+  │   ├─ documents (status: uploaded|processing|ready|failed)
+  │   ├─ document_chunks (content + 1024-dim vector)
+  │   ├─ chat_messages (role, content, metadata→sources)
+  │   └─ ai_usage_logs (provider, model, tokens, cost)
+  └─ pgvector extension → cosine similarity search on chunk embeddings
 ```
 
-### Docker Development
-```bash
-docker-compose up -d
+---
+
+## AI Integration
+
+### RAG Pipeline
+
+1. **Ingest** — `ProcessUploadedDocument` job runs after every upload:
+   - Extracts text (PDF via `smalot/pdfparser`, DOCX via `phpoffice/phpword`, CSV via `league/csv`)
+   - `ChunkingService` splits content into overlapping 2000-char segments
+   - `EmbeddingService` calls Voyage AI `voyage-3` for each chunk
+   - Chunks stored in `document_chunks` with 1024-dim vector column
+
+2. **Retrieve** — `KnowledgeAgent::retrieveContext()`:
+   - Embeds the user's question with Voyage AI
+   - Runs `whereVectorSimilarTo()` cosine search (pgvector) scoped to the notebook
+   - Returns top-5 chunks; assembles `<context>` block for the system prompt
+
+3. **Generate** — `KnowledgeAgent::chat()` / `chatStream()`:
+   - Sends assembled system prompt + user message to Groq via `Lab::Groq`
+   - Model: `llama-3.3-70b-versatile`
+   - Returns answer text + source citations (document title + id)
+
+### Streaming
+
+`KnowledgeAgent::chatStream()` yields `TextDelta` events from the Laravel AI streaming API. `ChatController::stream()` iterates the generator and writes SSE-formatted lines to the HTTP response:
+
+```
+data: {"delta": "Hello"}        ← text chunk (one per token/word)
+data: {"sources": [...]}        ← after stream ends, inject citations
+data: {"done": true}            ← sentinel
+data: {"error": "..."}          ← only on failure
 ```
 
-The Docker setup includes:
-- Backend service (Laravel)
-- Frontend service (React/Vite)
-- PostgreSQL with pgvector
-- Redis
-- MongoDB
-- Chroma (vector database)
+EventSource clients receive tokens as they arrive — typical first-token latency with Groq is under 300ms.
 
-## API Endpoints
+### Content Generation
 
-### Authentication
-- `POST /api/register` - User registration
-- `POST /api/login` - User login
-- `POST /api/logout` - User logout
-- `GET /api/user` - Get current user
+`KnowledgeAgent::generateContent(type)` re-uses the same RAG retrieval pipeline but swaps in a format-specific system prompt:
 
-### Chat
-- `POST /api/chat` - Send chat message
-- `GET/POST /api/chat/stream` - Stream chat responses
+| Type | Output |
+|---|---|
+| `study_guide` | Sectioned markdown with key concepts and definitions |
+| `faq` | Q&A pairs covering main topics |
+| `timeline` | Chronological events in `**Date:** Event` format |
+| `briefing` | Executive summary with findings and recommendations |
 
-### Documents
-- `GET /api/documents` - List documents
-- `POST /api/documents` - Upload document
+### Suggested Questions
 
-### Media Processing
-- `POST /api/images/generate` - Generate images
-- `POST /api/audio/transcribe` - Transcribe audio
+`KnowledgeAgent::suggestQuestions(lastAnswer)` sends the AI's last response back to Groq and asks for a JSON array of 3 follow-up questions. The UI displays these as clickable chips below each assistant message.
 
-## Security Features
+---
 
-1. **API Token Authentication** - Sanctum-based security
-2. **Request Validation** - Comprehensive input validation
-3. **Rate Limiting** - Built-in Laravel rate limiting
-4. **CORS Protection** - Cross-origin request handling
-5. **SQL Injection Prevention** - Eloquent ORM protection
+## Authentication
 
-## Logging & Monitoring
+**Standard endpoints** use `auth:sanctum` middleware — token passed as `Authorization: Bearer <token>` header.
 
-- **Comprehensive Logging** - Detailed request/response logging
-- **Error Tracking** - Full exception logging with stack traces
-- **Performance Monitoring** - Request timing and memory usage
-- **Real-time Logs** - Laravel Pail for development monitoring
+**Streaming endpoint** (`/api/chat/stream`) accepts the token as a query parameter (`?token=...`) because the browser's `EventSource` API does not support custom headers. `StreamAuth` middleware handles this case by looking up the token via `PersonalAccessToken::findToken()` and calling `auth()->setUser()`.
 
-## Deployment
+---
 
-### Production Considerations
-- Environment-specific configurations
-- Database migrations and seeding
-- Asset compilation and optimization
-- Caching strategies
-- Security hardening
+## Queue System
 
-### Container Deployment
-- Multi-stage Docker builds
-- Service orchestration with docker-compose
-- Volume management for persistent data
-- Network configuration for service communication
+Document processing and audio generation run as background jobs on a Redis-backed queue. The `queue` container runs:
+
+```bash
+php artisan queue:work redis --tries=3 --timeout=300 --sleep=3 --max-jobs=500 --max-time=3600
+```
+
+`--tries=3` means a document that fails (e.g., corrupted PDF) is retried twice before being marked `failed`.
+
+---
+
+## Observability
+
+Three structured log channels feed into Laravel Nightwatch:
+
+| Channel | Purpose | Key fields |
+|---|---|---|
+| `nightwatch` | All application logs (default) | request_id, user_id, environment |
+| `ai_events` | AI operation events | provider, model, duration_ms, chunk_count |
+| `stack` | Combines nightwatch + stderr for dev | — |
+
+Custom Monolog processors attach context to every log record:
+- `RequestIdProcessor` — unique request UUID (from `InitializeTrace` middleware)
+- `UserContextProcessor` — authenticated user id/email
+- `AIContextProcessor` — provider, model, notebook_id for AI logs
+- `EnvironmentProcessor` — app environment, version
+
+All AI calls log: initiation → RAG retrieval → LLM complete, each with `duration_ms`. This makes it trivial to identify slow retrievals or LLM latency spikes in the Nightwatch dashboard.
+
+---
+
+## Testing Strategy
+
+Tests live in `tests/Feature/` (controller-level, hits real SQLite database) and `tests/Unit/` (service-level, no HTTP).
+
+```
+tests/
+├── Feature/
+│   ├── Auth/AuthControllerTest.php
+│   ├── Notebook/NotebookControllerTest.php
+│   ├── Document/DocumentControllerTest.php
+│   └── Chat/ChatControllerTest.php
+└── Unit/
+    └── Services/ChunkingServiceTest.php
+```
+
+Factories available: `UserFactory`, `NotebookFactory`, `DocumentFactory`, `ChatMessageFactory`.
+
+Feature tests use Laravel's `RefreshDatabase` trait and test against an in-memory SQLite database — no mocking of the ORM layer.
+
+---
+
+## Key Dependencies
+
+```json
+{
+  "laravel/framework": "^12.0",
+  "laravel/ai": "^0.2",
+  "laravel/sanctum": "^4.0",
+  "laravel/nightwatch": "^1.24",
+  "laravel/reverb": "^1.0",
+  "smalot/pdfparser": "^2.0",
+  "phpoffice/phpword": "^1.3",
+  "league/csv": "^9.0",
+  "phpstan/phpstan": "^2.0",
+  "larastan/larastan": "^3.0"
+}
+```

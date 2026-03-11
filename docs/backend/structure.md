@@ -1,176 +1,141 @@
 # Backend Directory Structure
 
-## Root Directory Files
+```
+backend/
+├── app/
+│   ├── Ai/
+│   │   └── Agents/
+│   │       └── KnowledgeAgent.php          ← Core RAG + Groq agent
+│   ├── Http/
+│   │   ├── Controllers/
+│   │   │   ├── AuthController.php           ← register, login, logout
+│   │   │   ├── NotebookController.php       ← CRUD, user-scoped
+│   │   │   ├── DocumentController.php       ← upload, list, delete
+│   │   │   ├── ChatController.php           ← chat, stream, history, suggest-questions
+│   │   │   ├── ContentGenerationController.php ← generate (study_guide|faq|timeline|briefing)
+│   │   │   ├── AudioOverviewController.php  ← async audio summary generation
+│   │   │   └── UserController.php           ← profile, password, delete, usage
+│   │   └── Middleware/
+│   │       ├── InitializeTrace.php          ← attaches request_id UUID to each request
+│   │       ├── LogRequests.php              ← structured HTTP request/response logging
+│   │       └── StreamAuth.php              ← token-via-query-param auth for EventSource
+│   ├── Jobs/
+│   │   ├── ProcessUploadedDocument.php      ← extract → chunk → embed → store
+│   │   └── GenerateAudioOverview.php        ← notebook content → audio file
+│   ├── Logging/
+│   │   └── Processors/
+│   │       ├── RequestIdProcessor.php       ← injects request_id into every log record
+│   │       ├── UserContextProcessor.php     ← injects user_id / email
+│   │       ├── AIContextProcessor.php       ← injects provider, model, notebook_id
+│   │       └── EnvironmentProcessor.php     ← injects app env and version
+│   ├── Models/
+│   │   ├── User.php
+│   │   ├── Notebook.php
+│   │   ├── Document.php                     ← status: uploaded|processing|ready|failed
+│   │   ├── DocumentChunk.php                ← content + 1024-dim vector column
+│   │   ├── ChatMessage.php                  ← role, content, metadata(sources)
+│   │   └── AiUsageLog.php                   ← provider, model, tokens, estimated_cost
+│   ├── Providers/
+│   │   └── AppServiceProvider.php
+│   └── Services/
+│       ├── EmbeddingService.php             ← Voyage AI embed + pgvector search
+│       ├── ChunkingService.php              ← 2000-char chunks, 200-char overlap
+│       └── BusinessEventLogger.php         ← structured AI event logging helpers
+├── bootstrap/
+│   ├── app.php                              ← middleware registration, exception handler
+│   ├── providers.php
+│   └── cache/
+├── config/
+│   ├── ai.php                               ← Groq + VoyageAI provider definitions
+│   ├── logging.php                          ← nightwatch + ai_events channels + processors
+│   ├── services.php                         ← external service credentials
+│   ├── queue.php                            ← redis connection, job timeouts
+│   └── ...standard Laravel configs
+├── database/
+│   ├── factories/
+│   │   ├── UserFactory.php
+│   │   ├── NotebookFactory.php
+│   │   ├── DocumentFactory.php
+│   │   └── ChatMessageFactory.php
+│   ├── migrations/
+│   │   ├── ...create_users_table
+│   │   ├── ...create_notebooks_table
+│   │   ├── ...create_documents_table
+│   │   ├── ...create_document_chunks_table  ← vector(1024) column
+│   │   ├── ...create_chat_messages_table
+│   │   └── ...create_ai_usage_logs_table
+│   └── seeders/
+│       └── DatabaseSeeder.php
+├── routes/
+│   ├── api.php                              ← all REST + SSE endpoints
+│   ├── console.php
+│   └── web.php
+├── storage/
+│   ├── app/documents/                       ← uploaded file storage
+│   ├── app/audio/                           ← generated audio overviews
+│   ├── framework/
+│   └── logs/
+├── tests/
+│   ├── Feature/
+│   │   ├── Auth/AuthControllerTest.php
+│   │   ├── Notebook/NotebookControllerTest.php
+│   │   ├── Document/DocumentControllerTest.php
+│   │   └── Chat/ChatControllerTest.php
+│   ├── Unit/
+│   │   └── Services/ChunkingServiceTest.php
+│   └── TestCase.php
+├── .env.docker                              ← Docker environment (fill API keys here)
+├── .env.example                             ← Local dev environment template
+├── Dockerfile                               ← Multi-stage, PHP 8.2 + extensions
+├── docker-entrypoint.sh                     ← migrate + storage:link on container start
+├── composer.json
+└── phpunit.xml
+```
 
-### Configuration Files
-- **`composer.json`** - PHP dependencies and project configuration
-- **`.env.example`** - Environment variable template
-- **`.gitignore`** - Git ignore patterns
-- **`.gitattributes`** - Git file attributes
-- **`.editorconfig`** - Editor configuration for consistent coding style
-- **`phpunit.xml`** - PHPUnit testing configuration
-- **`phpunit.xml`** - PHPUnit testing configuration
+---
 
-### Build & Deployment
-- **`Dockerfile`** - Docker container configuration
-- **`docker-entrypoint.sh`** - Container startup script
-- **`artisan`** - Laravel command-line interface
+## Notable File Details
 
-### Documentation
-- **`README.md`** - Project documentation and setup instructions
+### `app/Ai/Agents/KnowledgeAgent.php`
+Implements `Laravel\Ai\Contracts\Agent` with the `Promptable` trait. Orchestrates the full RAG loop:
+- `chat()` — synchronous: retrieve context → prompt Groq → return answer + sources
+- `chatStream()` — streaming: retrieve context → stream Groq → yield `TextDelta` events
+- `suggestQuestions()` — send last answer → ask Groq for 3 JSON follow-ups
+- `generateContent($type)` — type-specific prompt → Groq → markdown output
+- `retrieveContext()` — private: embed query → pgvector search → build `<context>` block
 
-## Application Structure (`app/`)
+### `app/Services/EmbeddingService.php`
+- `embed(string $text): array` — calls Voyage AI `voyage-3`, returns float[1024]
+- `searchSimilarChunks(string $query, $notebookId, int $limit): Collection` — embeds query, runs `whereVectorSimilarTo()` scoped to notebook documents
 
-### AI Layer (`app/Ai/`)
-- **`Agents/`** - AI agent implementations
-  - **`KnowledgeAgent.php`** - Main AI chat agent with streaming support
+### `app/Services/ChunkingService.php`
+- `chunk(string $text): array<string>` — splits on sentence boundaries where possible; 2000-char target, 200-char overlap to preserve context continuity across chunk edges
 
-### HTTP Layer (`app/Http/`)
-- **`Controllers/`** - HTTP request handlers
-  - **`ChatController.php`** - Handles chat requests and streaming
-  - **`AuthController.php`** - User authentication
-  - **`DocumentController.php`** - Document management
-  - **`ImageController.php`** - Image generation
-  - **`AudioController.php`** - Audio transcription
-- **`Middleware/`** - HTTP middleware
-  - **`StreamAuth.php`** - Custom authentication for streaming endpoints
+### `app/Jobs/ProcessUploadedDocument.php`
+Dispatched immediately on document upload. Runs on the `redis` queue:
+1. Sets document status to `processing`
+2. Extracts raw text (PDF / DOCX / CSV / TXT)
+3. Passes text to `ChunkingService`
+4. Loops chunks: embed each via `EmbeddingService` → `DocumentChunk::create()`
+5. Sets document status to `ready` (or `failed` on exception)
 
-### Models (`app/Models/`)
-- User and data model definitions (Eloquent ORM)
+### `app/Http/Middleware/InitializeTrace.php`
+Runs first in the middleware stack. Generates a UUID `request_id` and stores it in `request()->attributes`. All subsequent log processors pick it up, ensuring every log line from a single request shares the same `request_id` — essential for Nightwatch trace correlation.
 
-### Jobs (`app/Jobs/`)
-- Background job processing
+### `config/ai.php`
+Defines two active providers:
+- `Lab::Groq` → `GROQ_API_KEY` → `llama-3.3-70b-versatile` for text generation
+- `Lab::VoyageAI` → `VOYAGE_API_KEY` → `voyage-3` for embeddings
 
-### Providers (`app/Providers/`)
-- Service providers for dependency injection
+### `config/logging.php`
+- `nightwatch` channel (default) with `RequestIdProcessor` + `UserContextProcessor` + `EnvironmentProcessor`
+- `ai_events` channel with `AIContextProcessor` for AI operation tracing
+- Both feed into the `notebookllm-nightwatch` Docker container running `php artisan nightwatch:agent`
 
-### Services (`app/Services/`)
-- Business logic and external service integrations
-
-## Configuration (`config/`)
-
-### Application Configuration
-- **`app.php`** - Core application settings
-- **`ai.php`** - AI provider configurations and settings
-- **`auth.php`** - Authentication configuration
-- **`database.php`** - Database connections and settings
-- **`cache.php`** - Caching configuration
-- **`queue.php`** - Queue system configuration
-- **`filesystems.php`** - File storage configuration
-- **`mail.php`** - Email configuration
-- **`services.php`** - External service configurations
-
-## Database (`database/`)
-
-### Migrations (`database/migrations/`)
-- Database schema definitions and version control
-
-### Seeders (`database/seeders/`)
-- Database seeding for development and testing
-
-### Factories (`database/factories/`)
-- Model factories for testing
-
-## Routing (`routes/`)
-
-### API Routes (`routes/api.php`)
-- RESTful API endpoints definition
-- Authentication middleware configuration
-- Route grouping and protection
-
-### Web Routes (`routes/web.php`)
-- Web application routes (if any)
-
-### Console Routes (`routes/console.php`)
-- Artisan command definitions
-
-## Public Assets (`public/`)
-
-### Static Files
-- **`index.php`** - Application entry point
-- **`css/`** - Stylesheets
-- **`js/`** - JavaScript files
-- **`images/`** - Image assets
-
-## Resources (`resources/`)
-
-### Views (`resources/views/`)
-- Blade templates (if any)
-
-### Assets (`resources/assets/`)
-- Frontend asset source files
-
-## Storage (`storage/`)
-
-### Application Storage
-- **`app/`** - Application-specific files
-- **`framework/`** - Framework cache and logs
-- **`logs/`** - Application log files
-- **`framework/cache/`** - Cache files
-- **`framework/views/`** - Compiled view files
-
-## Bootstrap (`bootstrap/`)
-
-### Application Bootstrap
-- **`app.php`** - Application bootstrap configuration
-- **`cache/`** - Bootstrap cache files
-- **`providers.php`** - Service provider registration
-
-## Testing (`tests/`)
-
-### Test Suites
-- **`Feature/`** - Feature tests
-- **`Unit/`** - Unit tests
-- **`TestCase.php`** - Base test case class
-
-## Vendor (`vendor/`)
-
-### Composer Dependencies
-- Third-party PHP packages and libraries
-- Managed by Composer package manager
-
-## Stubs (`stubs/`)
-
-### Code Stubs
-- Template files for code generation
-
-## Key Configuration Details
-
-### AI Configuration (`config/ai.php`)
-- **Default Providers**: OpenAI for text, Gemini for images, OpenAI for audio
-- **Provider Support**: Anthropic, Azure, Cohere, DeepSeek, Eleven, Gemini, Groq, Jina, Mistral, Ollama, OpenAI, OpenRouter, VoyageAI, xAI
-- **Caching**: Configurable caching for embeddings
-- **Multi-modal**: Support for text, image, audio, and embeddings
-
-### Environment Variables (`.env.example`)
-- **Database**: SQLite (default), PostgreSQL, MySQL support
-- **Authentication**: Sanctum token configuration
-- **Caching**: Redis, database, file cache options
-- **AI Providers**: API keys for all supported providers
-- **File Storage**: Local, S3, and other filesystem options
-
-### Composer Scripts
-- **`setup`** - Complete project setup
-- **`dev`** - Development server with concurrent processes
-- **`test`** - Run test suite
-- **`post-autoload-dump`** - Package discovery and optimization
-
-## Development Workflow
-
-### Local Development
-1. Install dependencies: `composer install`
-2. Configure environment: `cp .env.example .env`
-3. Generate application key: `php artisan key:generate`
-4. Run migrations: `php artisan migrate`
-5. Start development server: `php artisan serve`
-
-### Docker Development
-1. Build containers: `docker-compose build`
-2. Start services: `docker-compose up -d`
-3. Run migrations: `docker-compose exec backend php artisan migrate`
-
-### Production Deployment
-1. Optimize autoloader: `composer install --optimize-autoloader --no-dev`
-2. Cache configuration: `php artisan config:cache`
-3. Cache routes: `php artisan route:cache`
-4. Optimize views: `php artisan view:cache`
+### `routes/api.php`
+Groups:
+```
+(guest)       → register, login
+(auth:sanctum) → all protected endpoints
+(stream.auth)  → /chat/stream (accepts token query param)
+```

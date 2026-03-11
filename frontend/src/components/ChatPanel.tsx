@@ -88,10 +88,10 @@ export function ChatPanel({ notebookId, notebookName = 'Notebook' }: { notebookI
         })
         setLoading(false)
       },
-      () => {
+      (err) => {
         setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, streaming: false } : m))
         setLoading(false)
-        toast.error('Streaming failed. Please try again.')
+        toast.error(err?.message ?? 'Streaming failed. Please try again.')
       },
       (sources) => {
         setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, sources } : m))

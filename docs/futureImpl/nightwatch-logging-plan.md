@@ -1,6 +1,134 @@
-# Laravel Nightwatch Logging Implementation Plan
+# Nightwatch Logging — Implementation Notes
 
-This plan implements comprehensive Laravel Nightwatch logging throughout the backend to provide real-time monitoring, performance tracking, and error analysis for the NotebookLLM application.
+**Status: Shipped in v1.0** — This document has been updated from a planning doc to an implementation reference.
+
+---
+
+## What Was Implemented
+
+### Log Channels (`config/logging.php`)
+
+Two active channels feed Laravel Nightwatch:
+
+| Channel | When to use | Key processors |
+|---|---|---|
+| `nightwatch` | Default channel — all general application logs | RequestId, UserContext, Environment |
+| `ai_events` | AI-specific operations (RAG, LLM calls, streaming) | AIContext (adds provider/model/notebook_id) |
+
+### Custom Monolog Processors
+
+Located in `app/Logging/Processors/`:
+
+| Processor | Adds to every log record |
+|---|---|
+| `RequestIdProcessor` | `request_id` — UUID generated per HTTP request by `InitializeTrace` middleware |
+| `UserContextProcessor` | `user_id`, `user_email` — from `auth()` if authenticated |
+| `AIContextProcessor` | `ai_provider`, `model`, `notebook_id` — for AI operation logs |
+| `EnvironmentProcessor` | `app_env`, `app_version` — environment metadata |
+
+### Trace Initialization (`InitializeTrace` middleware)
+
+Runs first in the middleware stack. Generates `uniqid('req_', true)` and stores it in `$request->attributes`. Processors read from there — this guarantees every log line emitted during a request shares the same `request_id`.
+
+### `BusinessEventLogger` service
+
+Static helper methods for structured business event logging:
+
+```php
+BusinessEventLogger::logDocumentOperation('upload', $documentId, ['filename' => $name]);
+BusinessEventLogger::logAIUsage('groq', 'llama-3.3-70b-versatile', $tokens);
+```
+
+---
+
+## What We Log
+
+### Per HTTP request (LogRequests middleware)
+```json
+{ "event": "request.start",  "method": "POST", "path": "/api/chat/stream", "user_id": 42 }
+{ "event": "request.end",    "status": 200, "duration_ms": 1234 }
+```
+
+### Per RAG + LLM operation (KnowledgeAgent)
+```json
+{ "event": "agent.init",          "provider": "groq", "model": "llama-3.3-70b-versatile" }
+{ "event": "agent.rag_retrieval", "chunks_found": 5, "context_length": 4200, "duration_ms": 45 }
+{ "event": "agent.stream_start",  "source_count": 5, "used_rag": true }
+{ "event": "agent.stream_complete","chunk_count": 312, "duration_ms": 1820 }
+```
+
+### Per chat request (ChatController)
+```json
+{ "event": "chat.request",          "notebook_id": 7, "message_length": 84 }
+{ "event": "chat.stream_completed", "chunk_count": 312, "source_count": 3, "duration_ms": 1850 }
+```
+
+---
+
+## Docker: Nightwatch Agent
+
+The `nightwatch-agent` container runs:
+```bash
+php artisan nightwatch:agent --listen-on=0.0.0.0:2407
+```
+
+Backend and queue containers send log events to this agent via UDP (the `NIGHTWATCH_INGEST_URI=nightwatch-agent:2407` env var). The agent batches and forwards them to the Nightwatch cloud API. Log ingestion never blocks the HTTP response.
+
+### .env.docker settings
+```env
+NIGHTWATCH_ENABLED=true
+NIGHTWATCH_TOKEN=<your_token>
+NIGHTWATCH_INGEST_URI=nightwatch-agent:2407
+NIGHTWATCH_INGEST_TIMEOUT=0.5
+NIGHTWATCH_INGEST_CONNECTION_TIMEOUT=0.5
+NIGHTWATCH_INGEST_EVENT_BUFFER=500
+```
+
+---
+
+## Testing Nightwatch Locally
+
+```bash
+# Send 10 test events
+docker compose run --rm backend php artisan nightwatch:test --count=10
+
+# Verify connection
+docker compose run --rm backend php artisan nightwatch:status
+```
+
+---
+
+## Extending the Logging
+
+### Adding a new log channel
+
+1. Add channel definition to `config/logging.php`
+2. Create a processor class in `app/Logging/Processors/` if new context fields are needed
+3. Register the processor in the channel definition
+4. Use `Log::channel('your_channel')->info(...)` in the relevant service/controller
+
+### Adding a new AI operation
+
+Follow the pattern in `KnowledgeAgent`:
+1. Log `operation.start` before the API call (captures intent)
+2. Log `operation.complete` after (captures duration, output size, success)
+3. Wrap in try/catch and log `operation.failed` with error class + message
+
+This gives Nightwatch three timeline events per operation — useful for building latency percentile dashboards.
+
+---
+
+## Original Plan (archived)
+
+The original planning document described these gaps that have since been filled:
+
+- ~~No structured logging format for Nightwatch~~ → implemented via Monolog processors
+- ~~Missing performance metrics logging~~ → `duration_ms` on every AI operation log
+- ~~No AI-specific event tracking~~ → `ai_events` channel with `AIContextProcessor`
+- ~~Limited error context and correlation~~ → `request_id` trace + error class + user context
+- ~~No business intelligence logging~~ → `BusinessEventLogger` service
+
+The `PerformanceMonitoringService` described in the original plan (slow query logging, memory snapshots, cache hit rate) remains optional and can be added when needed.
 
 ## Current State Analysis
 

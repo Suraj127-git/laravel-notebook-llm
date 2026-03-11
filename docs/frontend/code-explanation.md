@@ -1,582 +1,258 @@
 # Frontend Code Explanation
 
-## Core Components
+Deep-dives into the most important frontend components and patterns.
 
-### 1. App.tsx - Root Component
+---
 
-**Purpose**: Main application component with routing configuration and authentication setup.
+## Redux Store & RTK Query
 
-```typescript
-import { Navigate, Route, Routes } from 'react-router-dom'
-import { LoginPage } from './pages/LoginPage'
-import { DashboardPage } from './pages/DashboardPage'
-import { ProtectedRoute } from './components/ProtectedRoute'
+`src/store/index.ts`
 
-function App() {
-  return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/*"
-        element={
-          <ProtectedRoute>
-            <DashboardPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
-  )
-}
+```ts
+export const store = configureStore({
+  reducer: {
+    [notebookApi.reducerPath]: notebookApi.reducer,
+    [documentApi.reducerPath]: documentApi.reducer,
+    [audioApi.reducerPath]:    audioApi.reducer,
+  },
+  middleware: (getDefault) =>
+    getDefault().concat(notebookApi.middleware, documentApi.middleware, audioApi.middleware),
+})
 ```
 
-**Key Features**:
-- **React Router Setup**: Configures application routing
-- **Protected Routes**: Main dashboard wrapped in authentication guard
-- **Catch-all Route**: Redirects unknown routes to home
-- **Lazy Loading**: Efficient component loading (potential improvement)
+The store is minimal — no custom slices. All server state lives in RTK Query's generated reducers. The middleware chain is required for RTK Query's cache lifecycle (polling, invalidation, refetching).
 
-**Routing Strategy**:
-- `/login` - Public login page
-- `/*` - Protected dashboard (catches all authenticated routes)
-- `*` - Fallback redirect to home
+### Why RTK Query for server state?
 
-### 2. ProtectedRoute.tsx - Authentication Guard
+Traditional approach: `useEffect` → `axios.get()` → `useState`. Problems: loading/error states duplicated everywhere, stale data on navigation, manual cache invalidation.
 
-**Purpose**: Protects routes that require authentication.
+RTK Query approach: declare endpoints once, get typed hooks (`useGetNotebooksQuery`, `useCreateNotebookMutation`). Cache invalidation is declarative via `providesTags` / `invalidatesTags` — creating a notebook automatically triggers a refetch of the notebook list.
 
-```typescript
-import { Navigate } from 'react-router-dom'
-import { useAuth } from '../hooks/useAuth' // Inferred hook
+### Tag-based invalidation example
 
-export function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth()
-  
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />
-  }
-  
-  return <>{children}</>
-}
+```ts
+// notebookApi.ts
+getNotebooks: builder.query({
+  query: () => '/notebooks',
+  providesTags: ['Notebook'],
+}),
+createNotebook: builder.mutation({
+  query: (body) => ({ url: '/notebooks', method: 'POST', body }),
+  invalidatesTags: ['Notebook'],    // ← auto-refetch getNotebooks after create
+}),
 ```
 
-**Features**:
-- **Authentication Check**: Verifies user authentication status
-- **Automatic Redirect**: Unauthenticated users redirected to login
-- **Children Rendering**: Authenticated users see protected content
-- **Replace Navigation**: Prevents back button issues
+---
 
-## Pages
+## Chat Streaming — EventSource Pattern
 
-### 3. LoginPage.tsx - Authentication Interface
+`src/lib/streaming.ts`
 
-**Purpose**: User login and authentication interface.
+### Why not `fetch` with streaming?
 
-**Key Features**:
-- **Form Validation**: Email and password validation
-- **Error Handling**: Display authentication errors
-- **Loading States**: Visual feedback during authentication
-- **Token Storage**: Secure token management
-- **Auto-redirect**: Redirect to dashboard after successful login
+`fetch` with `ReadableStream` works but requires manual parsing of SSE format, reconnection logic, and cleanup. The `EventSource` API handles reconnection automatically and provides a clean `onmessage` callback. The trade-off is that `EventSource` is GET-only, which is why the chat stream uses query parameters rather than a request body.
 
-**State Management**:
-```typescript
-const [email, setEmail] = useState('')
-const [password, setPassword] = useState('')
-const [error, setError] = useState('')
-const [loading, setLoading] = useState(false)
-```
+### `createChatStream()` internals
 
-**Authentication Flow**:
-1. User enters credentials
-2. Form validation on submission
-3. API call to backend `/api/login`
-4. Token storage in localStorage
-5. Redirect to dashboard on success
-
-**Error Handling**:
-- Network errors
-- Invalid credentials
-- Server errors
-- Validation feedback
-
-### 4. DashboardPage.tsx - Main Application Interface
-
-**Purpose**: Primary application interface after authentication.
-
-**Features**:
-- **Chat Integration**: Embeds ChatPanel component
-- **Document Management**: Document upload and listing
-- **User Interface**: Navigation and user information
-- **Responsive Design**: Mobile-friendly layout
-
-**Component Structure**:
-```typescript
-export function DashboardPage() {
-  return (
-    <div className="dashboard">
-      {/* Navigation Header */}
-      {/* Main Content Area */}
-      <ChatPanel />
-      <DocumentUpload />
-      {/* Additional Features */}
-    </div>
-  )
-}
-```
-
-## Components
-
-### 5. ChatPanel.tsx - Interactive Chat Interface
-
-**Purpose**: Real-time chat interface with AI agents.
-
-**Key Features**:
-- **Message Input**: User message composition
-- **Message History**: Conversation thread display
-- **Real-time Streaming**: Live AI response streaming
-- **Notebook Integration**: Chat sessions by notebook
-- **Error Handling**: Stream error management
-
-**State Management**:
-```typescript
-const [messages, setMessages] = useState<Message[]>([])
-const [inputValue, setInputValue] = useState('')
-const [isStreaming, setIsStreaming] = useState(false)
-const [notebookId, setNotebookId] = useState('')
-```
-
-**Streaming Implementation**:
-```typescript
-const handleSendMessage = async (message: string) => {
-  setIsStreaming(true)
-  
-  createChatStream(
-    notebookId,
-    message,
-    (delta) => {
-      // Handle streaming chunks
-      updateStreamingMessage(delta)
-    },
-    () => {
-      // Stream completed
-      setIsStreaming(false)
-    },
-    (error) => {
-      // Handle stream errors
-      setIsStreaming(false)
-      showError(error)
-    }
-  )
-}
-```
-
-**UI Features**:
-- **Auto-scroll**: Auto-scroll to latest messages
-- **Typing Indicators**: Show AI is responding
-- **Message Formatting**: Rich text display
-- **Timestamp Display**: Message timestamps
-
-### 6. DocumentUpload.tsx - File Management
-
-**Purpose**: Document upload and management interface.
-
-**Features**:
-- **File Selection**: Drag-and-drop or click to upload
-- **File Validation**: Type and size validation
-- **Upload Progress**: Visual progress indicators
-- **Success/Error Feedback**: Upload status feedback
-
-**Upload Process**:
-```typescript
-const handleFileUpload = async (file: File) => {
-  const formData = new FormData()
-  formData.append('document', file)
-  
-  try {
-    setUploading(true)
-    const response = await axios.post('/api/documents', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-        'Authorization': `Bearer ${token}`
-      },
-      onUploadProgress: (progressEvent) => {
-        const progress = Math.round(
-          (progressEvent.loaded * 100) / progressEvent.total!
-        )
-        setUploadProgress(progress)
-      }
-    })
-    
-    // Handle success
-    showSuccessMessage('Document uploaded successfully')
-  } catch (error) {
-    // Handle error
-    showErrorMessage('Upload failed')
-  } finally {
-    setUploading(false)
-  }
-}
-```
-
-**Validation Rules**:
-- **File Types**: PDF, DOC, DOCX, TXT (configurable)
-- **File Size**: Maximum file size limits
-- **File Names**: Sanitization and validation
-
-## Custom Hooks
-
-### 7. useAuth Hook (Inferred)
-
-**Purpose**: Authentication state management.
-
-**Features**:
-- **Authentication Status**: User login state
-- **Token Management**: Token storage and retrieval
-- **User Information**: User data management
-- **Login/Logout Functions**: Authentication actions
-
-**Implementation**:
-```typescript
-export function useAuth() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const token = localStorage.getItem('auth_token')
-    if (token) {
-      // Validate token with backend
-      validateToken(token)
-    } else {
-      setLoading(false)
-    }
-  }, [])
-
-  const login = async (credentials: LoginCredentials) => {
-    try {
-      const response = await axios.post('/api/login', credentials)
-      const { token, user } = response.data
-      
-      localStorage.setItem('auth_token', token)
-      setUser(user)
-      setIsAuthenticated(true)
-      
-      return { success: true }
-    } catch (error) {
-      return { success: false, error }
-    }
-  }
-
-  const logout = async () => {
-    try {
-      await axios.post('/api/logout', {}, {
-        headers: { 'Authorization': `Bearer ${getToken()}` }
-      })
-    } finally {
-      localStorage.removeItem('auth_token')
-      setUser(null)
-      setIsAuthenticated(false)
-    }
-  }
-
-  return {
-    isAuthenticated,
-    user,
-    loading,
-    login,
-    logout
-  }
-}
-```
-
-## Utilities
-
-### 8. streaming.ts - Real-time Streaming
-
-**Purpose**: Server-Sent Events implementation for real-time AI responses.
-
-**Core Function**:
-```typescript
+```ts
 export function createChatStream(
-  notebookId: string,
+  notebookId: number,
   message: string,
-  onDelta: (delta: string) => void,
-  onDone: () => void,
-  onError: (err: any) => void,
-) {
-  const token = localStorage.getItem('auth_token')
-  const params = new URLSearchParams({ 
-    notebook_id: notebookId, 
-    message,
-    ...(token && { token })
-  })
+  token: string,
+  callbacks: {
+    onDelta: (text: string) => void
+    onSources: (sources: Source[]) => void
+    onDone: () => void
+    onError: (msg: string) => void
+  }
+): () => void {   // returns cleanup function
 
-  const eventSource = new EventSource(`/api/chat/stream?${params.toString()}`, {
-    withCredentials: true,
-  } as any)
+  const params = new URLSearchParams({ token, notebook_id: String(notebookId), message })
+  const es = new EventSource(`/api/chat/stream?${params}`)
 
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      if (data.delta) {
-        onDelta(data.delta)
-      }
-      if (data.done) {
-        eventSource.close()
-        onDone()
-      }
-    } catch (e) {
-      console.error(e)
-    }
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data)
+    if (data.delta)   callbacks.onDelta(data.delta)
+    if (data.sources) callbacks.onSources(data.sources)
+    if (data.done)    { callbacks.onDone(); es.close() }
+    if (data.error)   { callbacks.onError(data.error); es.close() }
   }
 
-  eventSource.onerror = (err) => {
-    eventSource.close()
-    onError(err)
-  }
+  es.onerror = () => { callbacks.onError('Connection lost'); es.close() }
 
-  return eventSource
+  return () => es.close()  // caller invokes this on unmount
 }
 ```
 
-**Features**:
-- **Token Authentication**: Includes auth token for secure streaming
-- **EventSource API**: Native browser SSE support
-- **Error Handling**: Comprehensive error management
-- **Connection Cleanup**: Automatic connection closure
-- **Callback Pattern**: Flexible callback-based API
+The caller (ChatPanel) stores the cleanup function in a ref and calls it in the `useEffect` cleanup.
 
-**Stream Data Format**:
-```typescript
-// Streaming chunk
-{ "delta": "Hello" }
+---
 
-// Stream completion
-{ "done": true }
+## ChatPanel — Streaming State Machine
 
-// Error response
-{ "error": "Stream failed" }
+The component manages a mini state machine for the streaming lifecycle:
+
+```
+idle
+  → (user submits) → streaming
+      → (onDelta received) → streaming (append to buffer)
+      → (onDone received) → idle (move buffer to messages)
+      → (onError received) → error (show toast, reset)
 ```
 
-## Configuration Files
+State:
+```ts
+const [messages, setMessages] = useState<Message[]>([])
+const [streamingContent, setStreamingContent] = useState('')
+const [isStreaming, setIsStreaming] = useState(false)
+const esCleanupRef = useRef<(() => void) | null>(null)
+```
 
-### 9. vite.config.ts - Build Configuration
+On component unmount (notebook change or page navigation), `useEffect` cleanup calls `esCleanupRef.current?.()` to close any open EventSource. This prevents stale stream callbacks from updating unmounted component state.
 
-**Purpose**: Vite build tool and development server configuration.
+### Source citations
 
-```typescript
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+After a response completes, `metadata.sources` is an array of `{ title, document_id }` objects. ChatPanel renders these as small chip badges beneath each assistant message.
 
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  server: {
-    proxy: {
-      '/api': 'http://backend:8000',
-      '/sanctum': 'http://backend:8000',
-    },
+### Chat export
+
+`lib/export.ts` → `exportAsMarkdown()` serializes the `messages` array into a `.md` file and triggers a download via a programmatic `<a download>` click.
+
+---
+
+## `useOptimistic` in NotebookSidebar
+
+React 19's `useOptimistic` is purpose-built for this pattern:
+
+```tsx
+const [optimisticNotebooks, addOptimistic] = useOptimistic(
+  notebooks ?? [],
+  (state, newItem: Notebook) => [...state, newItem]
+)
+
+const handleCreate = async () => {
+  const temp = { id: -1, title: 'New Notebook', created_at: new Date().toISOString() }
+  addOptimistic(temp)                            // instant UI update
+  await createNotebook({ title: temp.title })   // server call (may fail)
+  // RTK Query invalidates cache → real notebook replaces temp
+}
+```
+
+If the mutation throws, React reverts `optimisticNotebooks` to `notebooks`. No manual rollback code needed.
+
+---
+
+## `useActionState` in LoginPage
+
+React 19's `useActionState` replaces the `useState` + `onSubmit` + loading flag pattern:
+
+```tsx
+const [state, formAction, isPending] = useActionState(
+  async (_prev: unknown, formData: FormData) => {
+    try {
+      const res = await axios.post('/api/login', {
+        email: formData.get('email'),
+        password: formData.get('password'),
+      })
+      localStorage.setItem('auth_token', res.data.token)
+      navigate('/')
+      return { error: null }
+    } catch {
+      return { error: 'Invalid credentials' }
+    }
+  },
+  { error: null }
+)
+
+// In JSX:
+<form action={formAction}>
+  <button disabled={isPending}>
+    {isPending ? 'Signing in...' : 'Sign In'}
+  </button>
+</form>
+```
+
+`isPending` is true automatically while the async action is running. No `useState` needed for loading state.
+
+---
+
+## RTK Query's `baseQuery` with Auth
+
+```ts
+const baseQuery = fetchBaseQuery({
+  baseUrl: '/api',
+  prepareHeaders: (headers) => {
+    const token = localStorage.getItem('auth_token')
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    return headers
   },
 })
 ```
 
-**Plugin Configuration**:
-- **React Plugin**: Fast Refresh and HMR support
-- **TailwindCSS Plugin**: CSS framework integration
+Every RTK Query request gets the auth header injected automatically. No Axios interceptors, no global defaults — colocated with the API slice.
 
-**Proxy Configuration**:
-- **API Proxy**: `/api` routes forwarded to backend
-- **Sanctum Proxy**: CSRF token handling
-- **Development Only**: Only active in development mode
+---
 
-### 10. package.json - Dependencies and Scripts
+## CVA-based UI Primitives
 
-**Key Dependencies**:
-- **React 19.2.0**: Latest React with concurrent features
-- **TypeScript 5.9.3**: Type-safe development
-- **Vite 7.3.1**: Fast build tool
-- **TailwindCSS 4.2.1**: Modern CSS framework
-- **Framer Motion 12.4.0**: Animation library
+`src/components/ui/Button.tsx`
 
-**Development Scripts**:
-```json
-{
-  "dev": "vite",                    // Development server
-  "build": "tsc -b && vite build", // Production build
-  "lint": "eslint .",               // Code quality
-  "preview": "vite preview"         // Production preview
-}
-```
-
-## Styling Approach
-
-### TailwindCSS Integration
-
-**Configuration**:
-- **Utility Classes**: Rapid UI development
-- **Responsive Design**: Mobile-first approach
-- **Custom Theme**: Brand-specific customization
-- **Component Variants**: Consistent design patterns
-
-**Example Usage**:
-```typescript
-<div className="flex flex-col h-screen bg-gray-50">
-  <header className="bg-white shadow-sm border-b">
-    <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      {/* Navigation content */}
-    </nav>
-  </header>
-  
-  <main className="flex-1 overflow-hidden">
-    {/* Main content */}
-  </main>
-</div>
-```
-
-### Animation with Framer Motion
-
-**Purpose**: Smooth animations and transitions.
-
-**Example Implementation**:
-```typescript
-import { motion, AnimatePresence } from 'framer-motion'
-
-const MessageList = ({ messages }) => (
-  <AnimatePresence>
-    {messages.map((message) => (
-      <motion.div
-        key={message.id}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -20 }}
-        transition={{ duration: 0.2 }}
-      >
-        {/* Message content */}
-      </motion.div>
-    ))}
-  </AnimatePresence>
-)
-```
-
-## Error Handling Strategy
-
-### Global Error Handling
-
-**Error Boundaries**:
-```typescript
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props)
-    this.state = { hasError: false }
-  }
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true }
-  }
-
-  componentDidCatch(error, errorInfo) {
-    console.error('Error caught by boundary:', error, errorInfo)
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return <ErrorFallback />
-    }
-
-    return this.props.children
-  }
-}
-```
-
-### API Error Handling
-
-**Axios Interceptors**:
-```typescript
-axios.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Handle authentication errors
-      logout()
-      navigate('/login')
-    }
-    
-    return Promise.reject(error)
+```ts
+const buttonVariants = cva(
+  'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors',
+  {
+    variants: {
+      variant: {
+        default:  'bg-blue-600 text-white hover:bg-blue-700',
+        outline:  'border border-slate-600 text-slate-200 hover:bg-slate-700',
+        ghost:    'text-slate-400 hover:text-slate-200 hover:bg-slate-700',
+        danger:   'bg-red-600 text-white hover:bg-red-700',
+      },
+      size: {
+        sm: 'h-8 px-3',
+        md: 'h-9 px-4',
+        lg: 'h-10 px-6',
+      },
+    },
+    defaultVariants: { variant: 'default', size: 'md' },
   }
 )
 ```
 
-## Performance Optimizations
+`cva` generates class strings based on variant combinations. `cn()` merges them with any additional classes passed as props. This eliminates runtime style logic and keeps the component surface minimal.
 
-### React Optimizations
+---
 
-**Component Memoization**:
-```typescript
-const Message = React.memo(({ message, onEdit }) => {
-  return (
-    <div className="message">
-      {/* Message content */}
-    </div>
-  )
-})
+## Document Upload — Polling
+
+The document processing polling runs only when there are documents in a non-terminal state:
+
+```ts
+const hasProcessingDocs = documents?.some(
+  d => d.status === 'processing' || d.status === 'uploaded'
+)
+
+useEffect(() => {
+  if (!hasProcessingDocs) return
+  const id = setInterval(() => refetch(), 3000)
+  return () => clearInterval(id)
+}, [hasProcessingDocs, refetch])
 ```
 
-**Hook Optimizations**:
-```typescript
-const expensiveValue = useMemo(() => {
-  return computeExpensiveValue(data)
-}, [data])
+A WebSocket push (via Reverb) would be more elegant, but polling at 3-second intervals is reliable and easy to reason about. The interval stops automatically when all documents reach a terminal state.
 
-const handleEvent = useCallback((event) => {
-  // Event handler logic
-}, [dependency])
+---
+
+## UsagePage — Recharts Integration
+
+```tsx
+<BarChart data={usage.byDate}>
+  <XAxis dataKey="date" />
+  <YAxis />
+  <Tooltip />
+  <Bar dataKey="prompt_tokens"     fill="#3b82f6" name="Input tokens" />
+  <Bar dataKey="completion_tokens" fill="#8b5cf6" name="Output tokens" />
+</BarChart>
 ```
 
-### Bundle Optimization
-
-**Code Splitting**:
-```typescript
-const LazyComponent = React.lazy(() => import('./LazyComponent'))
-
-// Usage with Suspense
-<Suspense fallback={<Loading />}>
-  <LazyComponent />
-</Suspense>
-```
-
-## Development Experience
-
-### Hot Module Replacement
-
-**Vite HMR**:
-- **Instant Updates**: No full page reloads
-- **State Preservation**: Component state maintained
-- **Fast Refresh**: React Fast Refresh integration
-
-### TypeScript Integration
-
-**Type Safety**:
-- **Component Props**: Strict prop typing
-- **API Responses**: Response type definitions
-- **State Management**: Typed state and actions
-- **Error Handling**: Typed error objects
-
-**Example Types**:
-```typescript
-interface Message {
-  id: string
-  content: string
-  role: 'user' | 'assistant'
-  timestamp: Date
-  notebookId: string
-}
-
-interface User {
-  id: string
-  email: string
-  name: string
-}
-```
-
-This frontend provides a modern, type-safe, and performant interface for the Laravel NotebookLLM application with real-time capabilities and excellent developer experience.
+Data comes from `GET /api/user/usage` which aggregates `ai_usage_logs` by date. The chart gives users visibility into their AI consumption — essential for cost transparency.

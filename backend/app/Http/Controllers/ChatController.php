@@ -18,36 +18,49 @@ class ChatController extends Controller
     {
         $validated = $request->validate([
             'notebook_id' => ['required', 'integer', 'exists:notebooks,id'],
-            'message' => ['required', 'string', 'max:4000'],
+            'message'     => ['required', 'string', 'max:4000'],
         ]);
 
         $notebookId = (int) $validated['notebook_id'];
-        $message = $validated['message'];
-        $user = $request->user();
+        $message    = $validated['message'];
+        $user       = $request->user();
+        $start      = microtime(true);
 
-        Log::info('Chat request received', [
-            'user_id' => $user?->id,
-            'notebook_id' => $notebookId,
+        Log::info('chat.request', [
+            'operation'      => 'chat',
+            'user_id'        => $user?->id,
+            'notebook_id'    => $notebookId,
             'message_length' => strlen($message),
         ]);
 
         try {
-            $agent = new KnowledgeAgent($user, $notebookId);
+            $agent    = new KnowledgeAgent($user, $notebookId);
             $response = $agent->chat($message);
 
-            // Persist both user and assistant messages
             $this->persistMessages($user?->id, $notebookId, $message, $response->content(), $response->sources);
 
+            Log::info('chat.completed', [
+                'operation'       => 'chat',
+                'user_id'         => $user?->id,
+                'notebook_id'     => $notebookId,
+                'source_count'    => count($response->sources),
+                'response_length' => strlen($response->content()),
+                'duration_ms'     => round((microtime(true) - $start) * 1000, 2),
+            ]);
+
             return response()->json([
-                'answer' => $response->content(),
+                'answer'  => $response->content(),
                 'sources' => $response->sources,
             ]);
 
         } catch (\Throwable $e) {
-            Log::error('Chat request failed', [
-                'error' => $e->getMessage(),
-                'user_id' => $user?->id,
+            Log::error('chat.failed', [
+                'operation'   => 'chat',
+                'user_id'     => $user?->id,
                 'notebook_id' => $notebookId,
+                'error'       => $e->getMessage(),
+                'error_class' => get_class($e),
+                'duration_ms' => round((microtime(true) - $start) * 1000, 2),
             ]);
 
             return response()->json(['error' => 'An error occurred while processing your request'], 500);
@@ -61,43 +74,53 @@ class ChatController extends Controller
     {
         // Token authentication via query param for EventSource compatibility
         if ($request->has('token') && ! auth()->check()) {
-            $token = $request->input('token');
+            $token       = $request->input('token');
             $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($token);
 
             if ($accessToken) {
                 auth()->setUser($accessToken->tokenable);
-                Log::info('Stream: token auth successful', ['user_id' => auth()->id()]);
+                Log::info('chat.stream_auth', [
+                    'operation' => 'stream_auth',
+                    'user_id'   => auth()->id(),
+                    'status'    => 'success',
+                ]);
             } else {
-                Log::warning('Stream: invalid token provided');
+                Log::warning('chat.stream_auth_failed', [
+                    'operation' => 'stream_auth',
+                    'status'    => 'invalid_token',
+                    'ip'        => $request->ip(),
+                ]);
             }
         }
 
         $validated = $request->validate([
             'notebook_id' => ['required', 'integer', 'exists:notebooks,id'],
-            'message' => ['required', 'string', 'max:4000'],
+            'message'     => ['required', 'string', 'max:4000'],
         ]);
 
         $notebookId = (int) $validated['notebook_id'];
-        $message = $validated['message'];
-        $user = auth()->user();
+        $message    = $validated['message'];
+        $user       = auth()->user();
+        $start      = microtime(true);
 
-        Log::info('Chat stream request received', [
-            'user_id' => $user?->id,
-            'notebook_id' => $notebookId,
+        Log::info('chat.stream_request', [
+            'operation'      => 'stream',
+            'user_id'        => $user?->id,
+            'notebook_id'    => $notebookId,
             'message_length' => strlen($message),
         ]);
 
         try {
             $agent = new KnowledgeAgent($user, $notebookId);
 
-            return response()->stream(function () use ($agent, $message, $user, $notebookId): void {
+            return response()->stream(function () use ($agent, $message, $user, $notebookId, $start): void {
                 try {
-                    $stream = $agent->chatStream($message);
+                    $stream     = $agent->chatStream($message);
                     $chunkCount = 0;
-                    $fullText = '';
+                    $fullText   = '';
 
                     foreach ($stream as $event) {
-                        $chunk = $event->text();
+                        $chunk     = $event->text();
                         $fullText .= $chunk;
                         $chunkCount++;
 
@@ -106,7 +129,6 @@ class ChatController extends Controller
                         @flush();
                     }
 
-                    // Send sources before signalling done
                     $sources = $agent->getSources();
                     echo 'data: '.json_encode(['sources' => $sources], JSON_THROW_ON_ERROR)."\n\n";
                     @ob_flush();
@@ -116,34 +138,48 @@ class ChatController extends Controller
                     @ob_flush();
                     @flush();
 
-                    // Persist messages after stream completes
                     $this->persistMessages($user?->id, $notebookId, $message, $fullText, $sources);
 
-                    Log::info('Stream completed', [
-                        'chunks' => $chunkCount,
-                        'user_id' => $user?->id,
+                    Log::info('chat.stream_completed', [
+                        'operation'       => 'stream',
+                        'user_id'         => $user?->id,
+                        'notebook_id'     => $notebookId,
+                        'chunk_count'     => $chunkCount,
+                        'source_count'    => count($sources),
+                        'response_length' => strlen($fullText),
+                        'duration_ms'     => round((microtime(true) - $start) * 1000, 2),
                     ]);
 
                 } catch (\Throwable $e) {
-                    Log::error('Stream processing failed', [
-                        'error' => $e->getMessage(),
-                        'user_id' => $user?->id,
+                    Log::error('chat.stream_failed', [
+                        'operation'   => 'stream',
+                        'user_id'     => $user?->id,
+                        'notebook_id' => $notebookId,
+                        'error'       => $e->getMessage(),
+                        'error_class' => get_class($e),
+                        'duration_ms' => round((microtime(true) - $start) * 1000, 2),
                     ]);
 
-                    echo 'data: '.json_encode(['error' => 'Stream processing failed'], JSON_THROW_ON_ERROR)."\n\n";
+                    $userMsg = str_contains($e->getMessage(), '503')
+                        ? 'AI service is temporarily unavailable. Please try again in a moment.'
+                        : 'Stream processing failed. Please try again.';
+                    echo 'data: '.json_encode(['error' => $userMsg], JSON_THROW_ON_ERROR)."\n\n";
                     @ob_flush();
                     @flush();
                 }
             }, 200, [
-                'Content-Type' => 'text/event-stream',
-                'Cache-Control' => 'no-cache, no-transform',
+                'Content-Type'      => 'text/event-stream',
+                'Cache-Control'     => 'no-cache, no-transform',
                 'X-Accel-Buffering' => 'no',
             ]);
 
         } catch (\Throwable $e) {
-            Log::error('Chat stream setup failed', [
-                'error' => $e->getMessage(),
-                'user_id' => $user?->id,
+            Log::error('chat.stream_setup_failed', [
+                'operation'   => 'stream',
+                'user_id'     => $user?->id,
+                'notebook_id' => $notebookId,
+                'error'       => $e->getMessage(),
+                'error_class' => get_class($e),
             ]);
 
             return response()->json(['error' => 'Failed to initialize chat stream'], 500);
@@ -160,13 +196,29 @@ class ChatController extends Controller
             'last_answer' => ['required', 'string', 'max:8000'],
         ]);
 
+        $start = microtime(true);
+
         try {
-            $agent = new KnowledgeAgent($request->user(), (int) $validated['notebook_id']);
+            $agent     = new KnowledgeAgent($request->user(), (int) $validated['notebook_id']);
             $questions = $agent->suggestQuestions($validated['last_answer']);
+
+            Log::info('chat.suggest_questions_completed', [
+                'operation'      => 'suggest_questions',
+                'user_id'        => $request->user()?->id,
+                'notebook_id'    => (int) $validated['notebook_id'],
+                'question_count' => count($questions),
+                'duration_ms'    => round((microtime(true) - $start) * 1000, 2),
+            ]);
 
             return response()->json(['questions' => $questions]);
         } catch (\Throwable $e) {
-            Log::warning('suggestQuestions failed', ['error' => $e->getMessage()]);
+            Log::warning('chat.suggest_questions_failed', [
+                'operation'   => 'suggest_questions',
+                'user_id'     => $request->user()?->id,
+                'notebook_id' => (int) $validated['notebook_id'],
+                'error'       => $e->getMessage(),
+                'duration_ms' => round((microtime(true) - $start) * 1000, 2),
+            ]);
 
             return response()->json(['questions' => []]);
         }
@@ -198,23 +250,27 @@ class ChatController extends Controller
     {
         try {
             ChatMessage::create([
-                'user_id' => $userId,
+                'user_id'     => $userId,
                 'notebook_id' => $notebookId,
-                'role' => 'user',
-                'content' => $userMessage,
-                'metadata' => null,
+                'role'        => 'user',
+                'content'     => $userMessage,
+                'metadata'    => null,
             ]);
 
             ChatMessage::create([
-                'user_id' => $userId,
+                'user_id'     => $userId,
                 'notebook_id' => $notebookId,
-                'role' => 'assistant',
-                'content' => $assistantMessage,
-                'metadata' => ['sources' => $sources],
+                'role'        => 'assistant',
+                'content'     => $assistantMessage,
+                'metadata'    => ['sources' => $sources],
             ]);
         } catch (\Throwable $e) {
-            Log::warning('Failed to persist chat messages', ['error' => $e->getMessage()]);
+            Log::warning('chat.persist_failed', [
+                'operation'   => 'persist_messages',
+                'user_id'     => $userId,
+                'notebook_id' => $notebookId,
+                'error'       => $e->getMessage(),
+            ]);
         }
     }
 }
-

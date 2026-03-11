@@ -25,9 +25,17 @@ export const audioApi = createApi({
   tagTypes: ['AudioOverview'],
   endpoints: (build) => ({
     getAudioOverview: build.query<AudioOverview | null, number>({
-      query: (notebookId) => `/notebooks/${notebookId}/audio-overview`,
+      // Use queryFn so a 404 ("not generated yet") becomes data: null instead of an error
+      queryFn: async (notebookId, _api, _extraOptions, baseQuery) => {
+        const result = await baseQuery(`/notebooks/${notebookId}/audio-overview`)
+        if (result.error) {
+          const status = (result.error as { status?: number }).status
+          if (status === 404) return { data: null }
+          return { error: result.error }
+        }
+        return { data: result.data as AudioOverview }
+      },
       providesTags: (_result, _err, notebookId) => [{ type: 'AudioOverview', id: notebookId }],
-      transformErrorResponse: () => null,
     }),
     generateAudioOverview: build.mutation<AudioOverview, number>({
       query: (notebookId) => ({ url: `/notebooks/${notebookId}/audio-overview`, method: 'POST' }),
