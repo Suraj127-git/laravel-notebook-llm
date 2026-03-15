@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: notebookllm-prod
+data:
+  VITE_API_BASE_URL: "/api"
+  VITE_REVERB_APP_KEY: "lgdbldvgvcqqosaobmym"
+  VITE_REVERB_HOST: "yourdomain.com"
+  VITE_REVERB_PORT: "443"
+  VITE_REVERB_SCHEME: "https"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: notebookllm-prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: notebookllm/frontend:latest
+        ports:
+        - containerPort: 5173
+        envFrom:
+        - configMapRef:
+            name: frontend-config
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5173
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5173
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: notebookllm-prod
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 5173
+    targetPort: 5173
+  type: ClusterIP

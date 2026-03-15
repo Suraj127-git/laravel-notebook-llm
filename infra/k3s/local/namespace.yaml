@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: notebookllm-local
+  labels:
+    name: notebookllm-local
+    environment: local

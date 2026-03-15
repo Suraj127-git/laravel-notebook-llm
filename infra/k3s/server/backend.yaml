@@ -1,0 +1,222 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: notebookllm-prod
+type: Opaque
+data:
+  APP_KEY: <BASE64_ENCODED_APP_KEY>  # Replace with actual base64 encoded app key
+  DB_PASSWORD: <BASE64_ENCODED_DB_PASSWORD>  # Replace with actual base64 encoded password
+  REDIS_PASSWORD: <BASE64_ENCODED_REDIS_PASSWORD>  # Replace with actual base64 encoded password
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: notebookllm-prod
+data:
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_URL: "https://yourdomain.com"
+  DB_HOST: postgres
+  DB_DATABASE: notebookllm
+  DB_USERNAME: postgres
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  CACHE_DRIVER: redis
+  QUEUE_CONNECTION: redis
+  SESSION_DRIVER: redis
+  LOG_CHANNEL: stderr
+  LOG_LEVEL: error
+  SESSION_SECURE_COOKIE: "true"
+  SESSION_HTTP_ONLY: "true"
+  SESSION_SAME_SITE: "lax"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: notebookllm-prod
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: notebookllm/backend:latest
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        - secretRef:
+            name: backend-secret
+        livenessProbe:
+          httpGet:
+            path: /up
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /up
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: backend-storage
+          mountPath: /var/www/html/storage
+      volumes:
+      - name: backend-storage
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: notebookllm-prod
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reverb
+  namespace: notebookllm-prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reverb
+  template:
+    metadata:
+      labels:
+        app: reverb
+    spec:
+      containers:
+      - name: reverb
+        image: notebookllm/backend:latest
+        command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080", "--no-interaction"]
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        - secretRef:
+            name: backend-secret
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reverb
+  namespace: notebookllm-prod
+spec:
+  selector:
+    app: reverb
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue
+  namespace: notebookllm-prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: queue
+  template:
+    metadata:
+      labels:
+        app: queue
+    spec:
+      containers:
+      - name: queue
+        image: notebookllm/backend:latest
+        command: ["php", "artisan", "queue:work", "redis", "--tries=3", "--timeout=300", "--sleep=3", "--max-jobs=500", "--max-time=3600"]
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        - secretRef:
+            name: backend-secret
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: backend-storage
+          mountPath: /var/www/html/storage
+      volumes:
+      - name: backend-storage
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+  namespace: notebookllm-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scheduler
+  template:
+    metadata:
+      labels:
+        app: scheduler
+    spec:
+      containers:
+      - name: scheduler
+        image: notebookllm/backend:latest
+        command: ["php", "artisan", "schedule:work"]
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        - secretRef:
+            name: backend-secret
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: backend-storage
+          mountPath: /var/www/html/storage
+      volumes:
+      - name: backend-storage
+        emptyDir: {}
