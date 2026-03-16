@@ -141,3 +141,6 @@ frontend_node_modules/
 nul
 
 .claude/settings.local.json
+
+/backend/.env
+/Backend/.env.docker
